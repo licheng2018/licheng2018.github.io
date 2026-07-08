@@ -4,58 +4,36 @@ Ph.D. Candidate in Electrical Engineering at École de technologie supérieure (
 
 I work at the intersection of **machine learning systems**, **AI infrastructure**, **performance engineering**, **GPU computing**, and **distributed optimization**. My recent projects span PyTorch compiler/runtime analysis, CUDA and Triton kernel optimization, LLM inference serving, distributed training, quantization, and communication-aware system benchmarking. I enjoy building practical systems, measuring them rigorously, and turning performance bottlenecks into clear engineering decisions across ML infrastructure, backend systems, and applied AI workloads.
 
-## Research and Engineering Interests
+[Resume](resume.md) · [Publications](publications.md) · [GitHub](https://github.com/licheng2018) · [LinkedIn](https://www.linkedin.com/in/licheng-zheng-589807178/) · musicsir at outlook dot com
 
-- ML compiler/runtime systems: PyTorch 2.x compile, TorchDynamo, FX, TorchInductor, graph breaks, dynamic-shape guards, SDPA, and kernel fusion
-- GPU programming and optimization: CUDA C++, Triton, FlashAttention-style kernels, Nsight Systems/Compute, PyTorch Profiler, roofline analysis, and memory bandwidth modeling
-- LLM inference systems: TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, KV cache, batching, queueing, and concurrency limits
-- Distributed training: PyTorch FSDP, ZeRO-1/2/3, activation checkpointing, NCCL collectives, DP/TP/PP, and communication profiling
-- System-level optimization: multi-agent reinforcement learning for wireless, satellite, and resource scheduling systems
+## At a Glance
+
+| Focus | What I Build |
+|---|---|
+| ML systems and AI infrastructure | Compiler/runtime experiments, inference benchmarks, distributed training workflows, and deployment-oriented performance studies |
+| GPU performance engineering | CUDA kernels, Triton kernels, FlashAttention-style attention, profiling, memory traffic analysis, and operator-level optimization |
+| Distributed and communication systems | NCCL collective benchmarks, FSDP/ZeRO analysis, DP/TP/PP experiments, and communication-aware scheduling |
+| Applied optimization | Multi-agent RL and resource allocation for wireless, satellite, and infrastructure systems |
+
+## Technical Strengths
+
+`PyTorch` · `torch.compile` · `TorchDynamo` · `FX` · `TorchInductor` · `CUDA C++` · `Triton` · `NCCL` · `FSDP` · `ZeRO` · `LLM Serving` · `Quantization` · `Nsight` · `PyTorch Profiler` · `Python` · `C++`
 
 ## Featured Projects
 
-### [PyTorch Compiler and AI Compiler Pipeline](projects/pytorch-compiler.md) [[github](https://github.com/licheng2018/AI-compiler)]
-
-Built a compiler/runtime benchmarking project and toy AI compiler pipeline to study PyTorch 2.x compilation, TorchDynamo graph capture, FX graphs, AOTAutograd, TorchInductor-generated Triton/CUDA kernels, graph breaks, dynamic-shape guards, operator fusion, and GPU runtime behavior.
-
-### [LLM Inference Serving Benchmark](projects/llm-serving.md) [[github](https://github.com/licheng2018/serving-benchmark)]
-
-Built a lightweight benchmark harness on T4 GPU to analyze TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, and concurrency trade-offs across controlled prompt, output, and concurrency settings.
-
-### [CUDA Kernel Optimization for ML Operators](projects/cuda-kernels.md) [[github](https://github.com/licheng2018/cuda_projects)]
-
-Implemented and optimized CUDA kernels for Matmul, LayerNorm, and Softmax using shared memory, block tiling, loop unrolling, register-level tuning, and PyTorch C++/CUDA extensions.
-
-### [Triton FlashAttention / IO-Aware Attention](projects/triton-flashattention.md) [[github](https://github.com/licheng2018/triton)]
-
-Implemented a mini FlashAttention-style kernel with tiled Q/K/V loading, online softmax, SRAM reuse, kernel fusion, and reduced DRAM traffic.
-
-### [Distributed Training with FSDP, ZeRO, and NCCL](projects/distributed-training.md) [[github](https://github.com/licheng2018/gpt_training)]
-
-Built distributed training workflows for GPT-Neo-1.3B using PyTorch FSDP, activation checkpointing, ZeRO sharding analysis, NCCL profiling, and microbatch tuning.
-
-### [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md) [[github](https://github.com/licheng2018/NCCL)]
-
-Benchmarked AllReduce, ReduceScatter, AllGather, Data Parallelism, Tensor Parallelism, and Pipeline Parallelism on a dual-GPU setup, analyzing latency-bound vs bandwidth-bound communication behavior.
-
-### [LLM Quantization Benchmark and Inference Optimization](projects/quantization.md) [[github](https://github.com/licheng2018/Quantization-Deployment-Basics)]
-
-Compared FP16, FP8, INT8, AWQ, and GPTQ inference settings under consistent workload configurations, measuring latency, throughput, memory footprint, p95 latency, and generation consistency.
-
-### [Multi-Agent RL for 5G Resource Scheduling](projects/multi-agent-rl.md)
-
-Modeled multi-cell interference and resource allocation as a multi-agent optimization problem using MADDPG and Actor-Critic frameworks for distributed power scheduling.
+| Area | Project | What It Demonstrates | Links |
+|---|---|---|---|
+| ML Compiler | **PyTorch Compiler and AI Compiler Pipeline** | Benchmarked eager vs `torch.compile`, graph capture, graph breaks, TorchInductor/Triton code generation, and built a toy compiler pipeline with IR, fusion, lowering, and Triton kernels. | [details](projects/pytorch-compiler.md) · [github](https://github.com/licheng2018/AI-compiler) |
+| LLM Serving | **LLM Inference Serving Benchmark** | Measured TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, KV-cache pressure, and concurrency trade-offs on controlled serving workloads. | [details](projects/llm-serving.md) · [github](https://github.com/licheng2018/serving-benchmark) |
+| CUDA Kernels | **CUDA Kernel Optimization for ML Operators** | Optimized Matmul, LayerNorm, Softmax, and attention-style operators using shared memory, tiling, loop unrolling, PyTorch extensions, and GPU profiling. | [details](projects/cuda-kernels.md) · [github](https://github.com/licheng2018/cuda_projects) |
+| Triton / Attention | **IO-Aware Attention System with Triton and FlashAttention-style Optimization** | Implemented tiled Q/K/V loading, online softmax, SRAM reuse, fused kernels, and FlashAttention-style memory traffic reduction in Triton. | [details](projects/triton-flashattention.md) · [github](https://github.com/licheng2018/triton) |
+| Distributed Training | **Distributed Training Optimization with FSDP, ZeRO, and Activation Checkpointing** | Built GPT-style distributed training workflows with FSDP, ZeRO sharding analysis, activation checkpointing, microbatch tuning, and rank-averaged metrics. | [details](projects/distributed-training.md) · [github](https://github.com/licheng2018/gpt_training) |
+| GPU Communication | **NCCL Parallelism and Communication Benchmarking** | Benchmarked AllReduce, ReduceScatter, AllGather, tensor parallelism, and pipeline parallelism, explaining latency-bound vs bandwidth-bound communication behavior. | [details](projects/nccl-parallelism.md) · [github](https://github.com/licheng2018/NCCL) |
+| Model Deployment | **LLM Quantization Benchmark and Inference Optimization** | Compared FP16 and INT8 inference on memory, TTFT, TPOT, throughput, total latency, and deployment trade-offs; connected results with AWQ/GPTQ concepts. | [details](projects/quantization.md) · [github](https://github.com/licheng2018/Quantization-Deployment-Basics) |
+| Applied AI | **Multi-Agent RL for 5G Resource Scheduling** | Modeled multi-cell interference and resource allocation as a multi-agent optimization problem using MADDPG and Actor-Critic methods. | [details](projects/multi-agent-rl.md) |
 
 ## Highlights
 
 - Ranked **30/616, Top 5%** in Kaggle's Google - Fast or Slow? Predict AI Model Runtime competition with a GCN-based performance predictor.
 - Research Assistant at ÉTS Sychromedia, working on communication-aware optimization frameworks for UAV-assisted 5G and LEO satellite systems.
 - Mitacs research experience with Ciena and VMware on optimization, resource allocation, and system-level performance evaluation.
-
-## Links
-
-- [Resume](resume.md)
-- [Publications](publications.md)
-- [GitHub](https://github.com/licheng2018)
-- [LinkedIn](https://www.linkedin.com/in/licheng-zheng-589807178/)
-- Email: musicsir at outlook dot com
