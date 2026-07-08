@@ -14,31 +14,31 @@ I focus on **ML systems**, **AI infrastructure**, **compiler/runtime analysis**,
 
 ## Featured Projects
 
-### [PyTorch Compiler and AI Compiler Pipeline](projects/pytorch-compiler.md)
+### [PyTorch Compiler and AI Compiler Pipeline](projects/pytorch-compiler.md) [[github](https://github.com/licheng2018/AI-compiler)]
 
 Built a compiler/runtime benchmarking project and toy AI compiler pipeline to study PyTorch 2.x compilation, TorchDynamo graph capture, FX graphs, AOTAutograd, TorchInductor-generated Triton/CUDA kernels, graph breaks, dynamic-shape guards, operator fusion, and GPU runtime behavior.
 
-### [LLM Inference Serving Benchmark](projects/llm-serving.md)
+### [LLM Inference Serving Benchmark](projects/llm-serving.md) [[github](https://github.com/licheng2018/serving-benchmark)]
 
 Built a lightweight benchmark harness on T4 GPU to analyze TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, and concurrency trade-offs across controlled prompt, output, and concurrency settings.
 
-### [CUDA Kernel Optimization for ML Operators](projects/cuda-kernels.md)
+### [CUDA Kernel Optimization for ML Operators](projects/cuda-kernels.md) [[github](https://github.com/licheng2018/cuda_projects)]
 
 Implemented and optimized CUDA kernels for Matmul, LayerNorm, and Softmax using shared memory, block tiling, loop unrolling, register-level tuning, and PyTorch C++/CUDA extensions.
 
-### [Triton FlashAttention / IO-Aware Attention](projects/triton-flashattention.md)
+### [Triton FlashAttention / IO-Aware Attention](projects/triton-flashattention.md) [[github](https://github.com/licheng2018/triton)]
 
 Implemented a mini FlashAttention-style kernel with tiled Q/K/V loading, online softmax, SRAM reuse, kernel fusion, and reduced DRAM traffic.
 
-### [Distributed Training with FSDP, ZeRO, and NCCL](projects/distributed-training.md)
+### [Distributed Training with FSDP, ZeRO, and NCCL](projects/distributed-training.md) [[github](https://github.com/licheng2018/gpt_training)]
 
 Built distributed training workflows for GPT-Neo-1.3B using PyTorch FSDP, activation checkpointing, ZeRO sharding analysis, NCCL profiling, and microbatch tuning.
 
-### [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md)
+### [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md) [[github](https://github.com/licheng2018/NCCL)]
 
 Benchmarked AllReduce, ReduceScatter, AllGather, Data Parallelism, Tensor Parallelism, and Pipeline Parallelism on a dual-GPU setup, analyzing latency-bound vs bandwidth-bound communication behavior.
 
-### [LLM Quantization Benchmark and Inference Optimization](projects/quantization.md)
+### [LLM Quantization Benchmark and Inference Optimization](projects/quantization.md) [[github](https://github.com/licheng2018/Quantization-Deployment-Basics)]
 
 Compared FP16, FP8, INT8, AWQ, and GPTQ inference settings under consistent workload configurations, measuring latency, throughput, memory footprint, p95 latency, and generation consistency.
 
