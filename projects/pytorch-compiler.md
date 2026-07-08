@@ -451,6 +451,147 @@ To understand the compiler stack from first principles, I also built a simplifie
 
 Example fusion targets included elementwise chains and Linear + ReLU style patterns. The toy pipeline demonstrated how a compiler can identify repeated graph structures, fuse them, and generate a lower-level GPU implementation.
 
+
+## Experiment Results
+
+The complete experiments come from two notebooks:
+
+- [torch_compile_colab_skeleton.ipynb](https://github.com/licheng2018/AI-compiler/blob/main/torch_compile_colab_skeleton.ipynb)
+- [Mini_PyTorch_to_Triton_Compiler.ipynb](https://github.com/licheng2018/AI-compiler/blob/main/Mini_PyTorch_to_Triton_Compiler.ipynb)
+
+Both notebooks were run on a Tesla T4 GPU with CUDA 12.8 and PyTorch 2.11.0+cu128. The mini compiler notebook used Triton 3.6.0.
+
+### MLP: Eager vs. `torch.compile`
+
+Workload: MLP with `D=768`, `DFF=3072`, `float16`.
+
+| Batch | Eager first run (ms) | Eager steady avg (ms) | Compile first run (ms) | Compile steady avg (ms) | Steady speedup |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 321.220 | 0.106 | 8828.449 | 0.208 | 0.51x |
+| 8 | 14.804 | 0.123 | 987.963 | 0.243 | 0.50x |
+| 32 | 2.677 | 0.139 | 0.439 | 0.241 | 0.57x |
+| 128 | 41.330 | 0.221 | 0.442 | 0.287 | 0.77x |
+| 512 | 0.575 | 0.462 | 0.797 | 0.523 | 0.88x |
+
+Dynamo inspection for the MLP produced one graph with zero graph breaks and three captured ops: `linear`, `gelu`, and `linear`. Even with clean graph capture, compiled execution was slower in steady state for this GEMM-heavy workload because eager PyTorch already dispatches to highly optimized library kernels.
+
+### Elementwise Fusion
+
+Workload: elementwise chain in `float16`.
+
+| N | Eager first run (ms) | Eager steady avg (ms) | Compile first run (ms) | Compile steady avg (ms) | Steady speedup |
+|---:|---:|---:|---:|---:|---:|
+| 1,024 | 108.165 | 0.075 | 385.398 | 0.088 | 0.85x |
+| 1,048,576 | 0.170 | 0.099 | 395.395 | 0.105 | 0.94x |
+| 16,777,216 | 1.741 | 1.528 | 0.621 | 0.460 | 3.32x |
+
+The large elementwise case shows the clearest compiler win: at `N=16,777,216`, compiled execution reached a 3.32x steady-state speedup. This matches the expected benefit of fusion: fewer kernel launches and less repeated global memory traffic.
+
+### Attention: Naive Attention, Compiled Attention, and SDPA
+
+Workload: `B=1`, `H=8`, `D=64`, `float16`.
+
+| Sequence N | Naive eager avg (ms) | Naive compile avg (ms) | Naive compile speedup | SDPA eager avg (ms) | SDPA compile avg (ms) | Best steady path |
+|---:|---:|---:|---:|---:|---:|---|
+| 128 | 0.172 | 0.125 | 1.38x | 0.037 | 0.124 | SDPA eager |
+| 256 | 0.152 | 0.150 | 1.01x | 0.043 | 0.138 | SDPA eager |
+| 512 | 0.172 | 0.161 | 1.07x | 0.075 | 0.151 | SDPA eager |
+| 1024 | 0.585 | 0.300 | 1.95x | 0.218 | 0.296 | SDPA eager |
+
+Compiling naive attention helped most at longer sequence length, especially `N=1024`, where the naive compiled path was nearly 2x faster than naive eager. However, PyTorch SDPA eager remained the fastest steady-state path across all tested sequence lengths, showing that calling the right optimized primitive can beat compiling a naive implementation.
+
+### Graph Break and Full-Graph Debugging
+
+| Function / case | Graph count | Graph break count | Op count | Result |
+|---|---:|---:|---:|---|
+| Tensor-only function: add -> ReLU -> multiply | 1 | 0 | 3 | Captured as one continuous graph. |
+| `.item()` data-dependent branch | 2 | 1 | 1 | Broke graph capture because `Tensor.item()` converted tensor data into Python control flow. |
+| `torch.where` rewrite | 1 | 0 | 4 | Fixed the graph break by keeping the branch as tensor computation. |
+| `fullgraph=True` with `.item()` branch | Failed | Failed | N/A | Compilation failed because Dynamo could not guard on a data-dependent expression. |
+| `fullgraph=True` with tensor-friendly rewrite | 1 | 0 | N/A | Compiled successfully. |
+
+The graph-break experiments show that correctness and compilability are different. A function can run correctly in eager mode while still being a poor candidate for compilation because Python control flow fragments the graph.
+
+### Dynamic Shape and Recompilation
+
+Batch-size variation for shape `(B, 128, 256)`:
+
+| Compile mode | Shape sequence | Observed elapsed times (ms) | Interpretation |
+|---|---|---|---|
+| Static compile | `(1,128,256)`, `(2,128,256)`, `(4,128,256)`, `(8,128,256)`, `(1,128,256)` | 569.467, 534.745, 543.342, 530.246, 0.394 | New shapes triggered expensive compilation/recompilation; the repeated shape reused cache. |
+| Dynamic compile | `(1,128,256)`, `(2,128,256)`, `(4,128,256)`, `(8,128,256)`, `(1,128,256)` | 902.859, 777.453, 0.468, 0.460, 0.335 | Higher initial compilation cost, then broad reuse across later batch sizes. |
+
+Sequence-length variation for shape `(1, S, 256)`:
+
+| Compile mode | Shape sequence | Observed elapsed times (ms) | Interpretation |
+|---|---|---|---|
+| Static compile | `(1,64,256)`, `(1,128,256)`, `(1,256,256)`, `(1,512,256)`, `(1,128,256)` | 576.871, 0.540, 640.394, 10.249, 0.402 | Shape changes triggered recompilation; Dynamo also hit the recompile limit due to sequence-length mismatch. |
+| Dynamic compile | `(1,64,256)`, `(1,128,256)`, `(1,256,256)`, `(1,512,256)`, `(1,128,256)` | 0.421, 0.464, 0.376, 0.308, 0.369 | Dynamic compile reused the compiled path across sequence lengths after setup. |
+
+### Backend Comparison
+
+| Backend | First run (ms) | Steady avg (ms) | Steady p50 (ms) | Steady p95 (ms) |
+|---|---:|---:|---:|---:|
+| Raw eager | 99.820 | 0.184 | 0.180 | 0.262 |
+| `torch.compile`, backend=`eager` | 68.763 | 0.185 | 0.177 | 0.223 |
+| `torch.compile`, backend=`aot_eager` | 83.465 | 0.284 | 0.251 | 0.354 |
+| `torch.compile`, backend=`inductor` | 935.247 | 0.212 | 0.206 | 0.260 |
+
+This comparison separates graph-capture overhead from backend code-generation benefit. In this test, Inductor had the largest first-run cost and did not beat raw eager in steady-state latency.
+
+### Mini PyTorch-to-Triton Compiler
+
+The mini compiler notebook implemented a small end-to-end compiler flow:
+
+```text
+PyTorch function
+-> FX graph capture
+-> custom mini IR
+-> add + ReLU pattern fusion
+-> Triton kernel lowering
+-> runtime wrapper
+-> correctness and performance benchmark
+```
+
+FX graph for the frontend function:
+
+```text
+x, bias -> operator.add -> torch.relu -> output
+```
+
+Mini IR before fusion:
+
+```text
+placeholder(x)
+placeholder(bias)
+add(x, bias)
+relu(add)
+output(relu)
+```
+
+Mini IR after fusion:
+
+```text
+placeholder(x)
+placeholder(bias)
+fused_add_relu(x, bias)
+output(relu)
+```
+
+Correctness check: maximum difference was `0.0`.
+
+| N | Eager first run (ms) | Eager steady avg (ms) | Triton first run (ms) | Triton steady avg (ms) | Speedup over eager |
+|---:|---:|---:|---:|---:|---:|
+| 1,024 | 0.101 | 0.039 | 0.101 | 0.049 | 0.78x |
+| 1,048,576 | 0.103 | 0.103 | 0.139 | 0.089 | 1.16x |
+| 16,777,216 | 1.409 | 1.402 | 0.932 | 0.861 | 1.63x |
+
+For reference, `torch.compile` with Inductor on the same `N=16,777,216` add+ReLU workload reported:
+
+| Method | First run (ms) | Steady avg (ms) | Steady p50 (ms) | Steady p95 (ms) |
+|---|---:|---:|---:|---:|
+| `torch.compile` Inductor | 3110.247 | 0.195 | 0.190 | 0.213 |
+
 ## Main Takeaways
 
 - One line of PyTorch can become multiple GPU kernels in eager mode.
@@ -474,5 +615,19 @@ Example fusion targets included elementwise chains and Linear + ReLU style patte
 - Benchmark design for cold-start and steady-state latency.
 - Operator fusion and memory-traffic reasoning.
 - Explaining compiler behavior from both frontend graph capture and backend GPU execution.
+
+## Experiment Result Analysis
+
+The results show that `torch.compile` is not a universal speed button. For GEMM-heavy MLP workloads, eager PyTorch already reaches optimized cuBLAS-backed paths, so compilation added overhead and produced steady-state slowdowns from 0.50x to 0.88x. Clean graph capture alone was not enough; the workload also needed optimization opportunities that Inductor could exploit beyond existing library dispatch.
+
+Elementwise workloads behaved differently. Small and medium elementwise cases did not benefit much, but the large `N=16,777,216` case achieved a 3.32x speedup. This is the clearest evidence for fusion: when many simple operations would otherwise materialize intermediate tensors and repeatedly touch HBM, compiled fusion can reduce memory traffic and kernel launch overhead.
+
+Attention results showed a more nuanced story. Compiling naive attention improved the long-sequence case, reaching about 1.95x speedup at `N=1024`, but SDPA eager was still faster than both naive eager and naive compiled paths. This suggests the best systems decision is not always to compile arbitrary Python code; often it is better to route the workload to a specialized primitive that already uses an optimized backend.
+
+The graph-break experiments explain why compiler-friendly code matters. `.item()` moves tensor data into Python control flow, causing a graph break and making `fullgraph=True` fail. Rewriting the branch with `torch.where` kept the computation in tensor form and restored graph capture. This is important for production ML systems because small Python-side decisions can determine whether the compiler sees one optimizable region or several fragmented regions.
+
+Dynamic-shape experiments show the trade-off between specialization and reuse. Static compilation produced expensive recompiles when shape assumptions changed, while dynamic compilation paid higher initial cost but reused compiled paths across later shape changes. For serving systems with variable batch size or sequence length, dynamic-shape behavior and guard failures can dominate real-world latency.
+
+The mini compiler results validate the compiler pipeline at a smaller scale. The custom FX-to-IR-to-Triton path produced numerically correct output and achieved speedups on large tensors, but it was slower for small tensors. This mirrors the broader lesson from `torch.compile`: compiler-generated kernels pay off when the workload is large enough and memory traffic or fusion opportunities dominate overhead.
 
 [Back to Home](../index.md)
