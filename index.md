@@ -36,7 +36,7 @@ Built distributed training workflows for GPT-Neo-1.3B using PyTorch FSDP, activa
 
 ### [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md)
 
-Benchmarked AllReduce, ReduceScatter, AllGather, Data Parallelism, Tensor Parallelism, and Pipeline Parallelism on a dual-GPU setup, reducing communication overhead by 25-30% in project benchmarks.
+Benchmarked AllReduce, ReduceScatter, AllGather, Data Parallelism, Tensor Parallelism, and Pipeline Parallelism on a dual-GPU setup, analyzing latency-bound vs bandwidth-bound communication behavior.
 
 ### [LLM Quantization Benchmark](projects/quantization.md)
 

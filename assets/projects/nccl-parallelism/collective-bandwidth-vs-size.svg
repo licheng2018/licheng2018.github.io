@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="520" viewBox="0 0 920 520">
+<rect width="100%" height="100%" fill="white"/>
+<text x="460.0" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#222">NCCL bus bandwidth saturation</text>
+<text x="24" y="260.0" transform="rotate(-90 24 260.0)" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#333">Bus bandwidth (GB/s)</text>
+<line x1="88" y1="444" x2="888" y2="444" stroke="#333"/>
+<line x1="88" y1="54" x2="88" y2="444" stroke="#333"/>
+<line x1="88" y1="444.0" x2="888" y2="444.0" stroke="#ddd"/>
+<text x="78" y="449.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13" fill="#555">2.60</text>
+<line x1="88" y1="346.5" x2="888" y2="346.5" stroke="#ddd"/>
+<text x="78" y="351.5" text-anchor="end" font-family="Arial, sans-serif" font-size="13" fill="#555">3.00</text>
+<line x1="88" y1="249.0" x2="888" y2="249.0" stroke="#ddd"/>
+<text x="78" y="254.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13" fill="#555">3.40</text>
+<line x1="88" y1="151.5" x2="888" y2="151.5" stroke="#ddd"/>
+<text x="78" y="156.5" text-anchor="end" font-family="Arial, sans-serif" font-size="13" fill="#555">3.80</text>
+<line x1="88" y1="54.0" x2="888" y2="54.0" stroke="#ddd"/>
+<text x="78" y="59.0" text-anchor="end" font-family="Arial, sans-serif" font-size="13" fill="#555">4.20</text>
+<line x1="88.0" y1="444" x2="88.0" y2="450" stroke="#333"/>
+<text x="88.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">1</text>
+<line x1="188.0" y1="444" x2="188.0" y2="450" stroke="#333"/>
+<text x="188.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">2</text>
+<line x1="288.0" y1="444" x2="288.0" y2="450" stroke="#333"/>
+<text x="288.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">4</text>
+<line x1="388.0" y1="444" x2="388.0" y2="450" stroke="#333"/>
+<text x="388.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">8</text>
+<line x1="488.0" y1="444" x2="488.0" y2="450" stroke="#333"/>
+<text x="488.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">16</text>
+<line x1="588.0" y1="444" x2="588.0" y2="450" stroke="#333"/>
+<text x="588.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">32</text>
+<line x1="688.0" y1="444" x2="688.0" y2="450" stroke="#333"/>
+<text x="688.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">64</text>
+<line x1="788.0" y1="444" x2="788.0" y2="450" stroke="#333"/>
+<text x="788.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">128</text>
+<line x1="888.0" y1="444" x2="888.0" y2="450" stroke="#333"/>
+<text x="888.0" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#555">256</text>
+<text x="488.0" y="502" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" fill="#333">Message size (MB)</text>
+<polyline points="88.0,217.3 188.0,158.8 288.0,139.3 388.0,114.9 488.0,112.5 588.0,107.6 688.0,105.2 788.0,105.2 888.0,105.2" fill="none" stroke="#1f77b4" stroke-width="3"/>
+<circle cx="88.0" cy="217.3" r="4.5" fill="#1f77b4"/>
+<circle cx="188.0" cy="158.8" r="4.5" fill="#1f77b4"/>
+<circle cx="288.0" cy="139.3" r="4.5" fill="#1f77b4"/>
+<circle cx="388.0" cy="114.9" r="4.5" fill="#1f77b4"/>
+<circle cx="488.0" cy="112.5" r="4.5" fill="#1f77b4"/>
+<circle cx="588.0" cy="107.6" r="4.5" fill="#1f77b4"/>
+<circle cx="688.0" cy="105.2" r="4.5" fill="#1f77b4"/>
+<circle cx="788.0" cy="105.2" r="4.5" fill="#1f77b4"/>
+<circle cx="888.0" cy="105.2" r="4.5" fill="#1f77b4"/>
+<line x1="108" y1="72" x2="136" y2="72" stroke="#1f77b4" stroke-width="3"/>
+<circle cx="122" cy="72" r="4" fill="#1f77b4"/>
+<text x="146" y="77" font-family="Arial, sans-serif" font-size="14" fill="#333">AllReduce</text>
+<polyline points="88.0,395.3 188.0,329.4 288.0,317.2 388.0,307.5 488.0,302.6 588.0,290.4 688.0,280.7 788.0,256.3 888.0,183.2" fill="none" stroke="#2ca02c" stroke-width="3"/>
+<circle cx="88.0" cy="395.3" r="4.5" fill="#2ca02c"/>
+<circle cx="188.0" cy="329.4" r="4.5" fill="#2ca02c"/>
+<circle cx="288.0" cy="317.2" r="4.5" fill="#2ca02c"/>
+<circle cx="388.0" cy="307.5" r="4.5" fill="#2ca02c"/>
+<circle cx="488.0" cy="302.6" r="4.5" fill="#2ca02c"/>
+<circle cx="588.0" cy="290.4" r="4.5" fill="#2ca02c"/>
+<circle cx="688.0" cy="280.7" r="4.5" fill="#2ca02c"/>
+<circle cx="788.0" cy="256.3" r="4.5" fill="#2ca02c"/>
+<circle cx="888.0" cy="183.2" r="4.5" fill="#2ca02c"/>
+<line x1="108" y1="96" x2="136" y2="96" stroke="#2ca02c" stroke-width="3"/>
+<circle cx="122" cy="96" r="4" fill="#2ca02c"/>
+<text x="146" y="101" font-family="Arial, sans-serif" font-size="14" fill="#333">ReduceScatter</text>
+<polyline points="88.0,395.3 188.0,336.8 288.0,327.0 388.0,312.4 488.0,302.6 588.0,295.3 688.0,288.0 788.0,288.0 888.0,278.3" fill="none" stroke="#ff7f0e" stroke-width="3"/>
+<circle cx="88.0" cy="395.3" r="4.5" fill="#ff7f0e"/>
+<circle cx="188.0" cy="336.8" r="4.5" fill="#ff7f0e"/>
+<circle cx="288.0" cy="327.0" r="4.5" fill="#ff7f0e"/>
+<circle cx="388.0" cy="312.4" r="4.5" fill="#ff7f0e"/>
+<circle cx="488.0" cy="302.6" r="4.5" fill="#ff7f0e"/>
+<circle cx="588.0" cy="295.3" r="4.5" fill="#ff7f0e"/>
+<circle cx="688.0" cy="288.0" r="4.5" fill="#ff7f0e"/>
+<circle cx="788.0" cy="288.0" r="4.5" fill="#ff7f0e"/>
+<circle cx="888.0" cy="278.3" r="4.5" fill="#ff7f0e"/>
+<line x1="108" y1="120" x2="136" y2="120" stroke="#ff7f0e" stroke-width="3"/>
+<circle cx="122" cy="120" r="4" fill="#ff7f0e"/>
+<text x="146" y="125" font-family="Arial, sans-serif" font-size="14" fill="#333">AllGather</text>
+</svg>

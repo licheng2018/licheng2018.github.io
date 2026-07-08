@@ -35,7 +35,7 @@ Ph.D. candidate focused on ML systems, compiler/runtime analysis, and GPU kernel
 - [CUDA Kernel Optimization and PyTorch Extensions](projects/cuda-kernels.md)
 - [LLM Serving Benchmark and Inference Systems Analysis](projects/llm-serving.md)
 - [Distributed Training Optimization with FSDP, ZeRO, and Activation Checkpointing](projects/distributed-training.md)
-- [Distributed Training Systems and NCCL Parallelism](projects/nccl-parallelism.md)
+- [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md)
 - [LLM Quantization Benchmark and Inference Optimization](projects/quantization.md)
 - [System-Level Optimization with Multi-Agent RL](projects/multi-agent-rl.md)
 
