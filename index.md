@@ -38,7 +38,7 @@ Built distributed training workflows for GPT-Neo-1.3B using PyTorch FSDP, activa
 
 Benchmarked AllReduce, ReduceScatter, AllGather, Data Parallelism, Tensor Parallelism, and Pipeline Parallelism on a dual-GPU setup, analyzing latency-bound vs bandwidth-bound communication behavior.
 
-### [LLM Quantization Benchmark](projects/quantization.md)
+### [LLM Quantization Benchmark and Inference Optimization](projects/quantization.md)
 
 Compared FP16, FP8, INT8, AWQ, and GPTQ inference settings under consistent workload configurations, measuring latency, throughput, memory footprint, p95 latency, and generation consistency.
 
