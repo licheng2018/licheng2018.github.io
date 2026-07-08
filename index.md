@@ -2,26 +2,55 @@
 
 Ph.D. Candidate in Electrical Engineering at École de technologie supérieure (ÉTS), Montreal.
 
-I focus on **AI Infrastructure**, **ML Systems**, **LLM Inference Serving**, **Distributed Training**, and **GPU Kernel Optimization**.
+I focus on **ML systems**, **AI infrastructure**, **compiler/runtime analysis**, **LLM inference serving**, **distributed training**, and **GPU kernel optimization**. My recent work connects PyTorch compiler workflows, CUDA/Triton kernels, FlashAttention-style optimization, and rigorous GPU benchmarking. I am especially interested in using LLM agents to automate kernel generation, performance debugging, and ML compiler optimization.
 
-My recent work includes LLM serving benchmarking, CUDA/Triton kernel optimization, distributed training with FSDP/NCCL, quantization benchmarking, and IO-aware attention kernels.
+## Research and Engineering Interests
+
+- ML compiler/runtime systems: PyTorch 2.x compile, TorchDynamo, FX, TorchInductor, graph breaks, dynamic-shape guards, SDPA, and kernel fusion
+- GPU programming and optimization: CUDA C++, Triton, FlashAttention-style kernels, Nsight Systems/Compute, PyTorch Profiler, roofline analysis, and memory bandwidth modeling
+- LLM inference systems: TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, KV cache, batching, queueing, and concurrency limits
+- Distributed training: PyTorch FSDP, ZeRO-1/2/3, activation checkpointing, NCCL collectives, DP/TP/PP, and communication profiling
+- System-level optimization: multi-agent reinforcement learning for wireless, satellite, and resource scheduling systems
 
 ## Featured Projects
 
+### [PyTorch Compiler and AI Compiler Pipeline](projects/pytorch-compiler.md)
+
+Built a compiler/runtime benchmarking project and toy AI compiler pipeline to study how PyTorch 2.x compilation, graph capture, operator fusion, and Triton code generation affect GPU performance for ML and attention workloads.
+
 ### [LLM Inference Serving Benchmark](projects/llm-serving.md)
-Built a lightweight benchmark harness to analyze TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, and concurrency trade-offs.
+
+Built a lightweight benchmark harness on T4 GPU to analyze TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, and concurrency trade-offs across controlled prompt, output, and concurrency settings.
 
 ### [CUDA Kernel Optimization for ML Operators](projects/cuda-kernels.md)
-Implemented and optimized CUDA kernels for LayerNorm, Softmax, and Matmul using shared memory, warp-level primitives, and PyTorch C++/CUDA extensions.
+
+Implemented and optimized CUDA kernels for Matmul, LayerNorm, and Softmax using shared memory, block tiling, loop unrolling, register-level tuning, and PyTorch C++/CUDA extensions.
 
 ### [Triton FlashAttention / IO-Aware Attention](projects/triton-flashattention.md)
-Implemented a mini FlashAttention-style kernel with tiled Q/K/V loading, online softmax, SRAM reuse, and kernel fusion.
+
+Implemented a mini FlashAttention-style kernel with tiled Q/K/V loading, online softmax, SRAM reuse, kernel fusion, and reduced DRAM traffic.
 
 ### [Distributed Training with FSDP, ZeRO, and NCCL](projects/distributed-training.md)
-Built distributed training workflows for GPT-Neo-1.3B using PyTorch FSDP, activation checkpointing, and NCCL profiling.
+
+Built distributed training workflows for GPT-Neo-1.3B using PyTorch FSDP, activation checkpointing, ZeRO sharding analysis, NCCL profiling, and microbatch tuning.
+
+### [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md)
+
+Benchmarked AllReduce, ReduceScatter, AllGather, Data Parallelism, Tensor Parallelism, and Pipeline Parallelism on a dual-GPU setup, reducing communication overhead by 25-30% in project benchmarks.
 
 ### [LLM Quantization Benchmark](projects/quantization.md)
-Compared FP16, FP8, INT8, AWQ, and GPTQ inference settings under consistent workload configurations.
+
+Compared FP16, FP8, INT8, AWQ, and GPTQ inference settings under consistent workload configurations, measuring latency, throughput, memory footprint, p95 latency, and generation consistency.
+
+### [Multi-Agent RL for 5G Resource Scheduling](projects/multi-agent-rl.md)
+
+Modeled multi-cell interference and resource allocation as a multi-agent optimization problem using MADDPG and Actor-Critic frameworks for distributed power scheduling.
+
+## Highlights
+
+- Ranked **30/616, Top 5%** in Kaggle's Google - Fast or Slow? Predict AI Model Runtime competition with a GCN-based performance predictor.
+- Research Assistant at ÉTS Sychromedia, working on communication-aware optimization frameworks for UAV-assisted 5G and LEO satellite systems.
+- Mitacs research experience with Ciena and VMware on optimization, resource allocation, and system-level performance evaluation.
 
 ## Links
 
@@ -29,4 +58,4 @@ Compared FP16, FP8, INT8, AWQ, and GPTQ inference settings under consistent work
 - [Publications](publications.md)
 - [GitHub](https://github.com/licheng2018)
 - [LinkedIn](https://www.linkedin.com/in/licheng-zheng-589807178/)
-- Email: musicsir at outlook com
+- Email: musicsir at outlook dot com
