@@ -2,7 +2,7 @@
 
 Ph.D. Candidate in Electrical Engineering at École de technologie supérieure (ÉTS), Montreal.
 
-I focus on **ML systems**, **AI infrastructure**, **compiler/runtime analysis**, **LLM inference serving**, **distributed training**, and **GPU kernel optimization**. My recent work connects PyTorch compiler workflows, CUDA/Triton kernels, FlashAttention-style optimization, and rigorous GPU benchmarking. I am especially interested in using LLM agents to automate kernel generation, performance debugging, and ML compiler optimization.
+I work at the intersection of **machine learning systems**, **AI infrastructure**, **performance engineering**, **GPU computing**, and **distributed optimization**. My recent projects span PyTorch compiler/runtime analysis, CUDA and Triton kernel optimization, LLM inference serving, distributed training, quantization, and communication-aware system benchmarking. I enjoy building practical systems, measuring them rigorously, and turning performance bottlenecks into clear engineering decisions across ML infrastructure, backend systems, and applied AI workloads.
 
 ## Research and Engineering Interests
 
