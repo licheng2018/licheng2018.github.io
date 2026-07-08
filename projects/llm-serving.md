@@ -218,34 +218,74 @@ Concurrency affects serving in several ways:
 
 This creates a latency-throughput trade-off. More concurrency can improve utilization, but it can also increase queueing delay and tail latency.
 
-## Simulation Results
+## Benchmark Repository Results
 
-The slides include a small simulation showing how prompt length and output length affect serving metrics. The plotted values are read from the slide figures, so they should be interpreted as approximate chart values rather than a raw benchmark log.
+The full benchmark repository includes three notebooks and saved result artifacts:
+
+- [1.minimal_benchmark copy.ipynb](https://github.com/licheng2018/serving-benchmark/blob/main/1.minimal_benchmark%20copy.ipynb)
+- [2_sweep_benchmark.ipynb](https://github.com/licheng2018/serving-benchmark/blob/main/2_sweep_benchmark.ipynb)
+- [3_concurrency_benchmark.ipynb](https://github.com/licheng2018/serving-benchmark/blob/main/3_concurrency_benchmark.ipynb)
+- [prompt_sweep_summary.json](../assets/projects/llm-serving/repo-prompt-sweep-summary.json)
+- [output_sweep_summary.json](../assets/projects/llm-serving/repo-output-sweep-summary.json)
+- [concurrency_sweep_summary.json](../assets/projects/llm-serving/repo-concurrency-sweep-summary.json)
+
+The repo contains four result plots: TTFT vs. prompt length, TPOT vs. output length, throughput vs. concurrency, and average latency vs. concurrency. These result images are included here so the project page reflects the actual benchmark outputs rather than only the slide-level explanation.
 
 ### TTFT vs. Prompt Length
 
-![TTFT vs prompt length](../assets/projects/llm-serving/simulation-ttft-vs-prompt.png)
+![TTFT vs prompt length](../assets/projects/llm-serving/repo-ttft-vs-prompt-length.png)
 
-| Prompt length (tokens) | Approx. average TTFT (sec) | Observation |
-|---:|---:|---|
-| 32 | ~0.044 | Short prompt, lowest prefill cost |
-| 64 | ~0.046 | Similar to 32-token prompt |
-| 128 | ~0.050 | Slight TTFT increase |
-| 512 | ~0.067 | Clear prefill-cost growth |
-| 1024 | ~0.156 | Largest TTFT due to full-prompt attention/KV-cache construction |
+Prompt sweep setting: fixed output length of 64 generated tokens.
+
+| Prompt length (tokens) | Average TTFT (sec) | Average total latency (sec) | Observation |
+|---:|---:|---:|---|
+| 32 | 0.0437 | 2.6492 | Short prompt, low prefill cost |
+| 128 | 0.0450 | 2.3884 | Similar TTFT to 32 tokens |
+| 512 | 0.0674 | 2.6174 | Clear prefill-cost growth |
+| 1024 | 0.1561 | 2.6707 | Largest TTFT due to full-prompt attention/KV-cache construction |
 
 ### TPOT vs. Output Length
 
-![TPOT vs output length](../assets/projects/llm-serving/simulation-tpot-vs-output.png)
+![TPOT vs output length](../assets/projects/llm-serving/repo-tpot-vs-output-length.png)
 
-| Output length (tokens) | Approx. average TPOT (sec/token) | Observation |
-|---:|---:|---|
-| 32 | ~0.0361 | Decode step cost is stable but slightly noisy |
-| 64 | ~0.0352 | Lowest plotted TPOT |
-| 128 | ~0.0366 | Highest plotted TPOT |
-| 256 | ~0.0359 | Returns near the initial level |
+Output sweep setting: fixed prompt length of 128 input tokens.
+
+| Output length (tokens) | Average TPOT (sec/token) | Average total latency (sec) | Observation |
+|---:|---:|---:|---|
+| 32 | 0.0361 | 1.1586 | Short decode, lowest total latency |
+| 64 | 0.0352 | 2.2537 | TPOT remains stable |
+| 128 | 0.0366 | 4.6908 | Total latency grows with generated tokens |
+| 256 | 0.0359 | 9.1844 | Longest decode, total latency scales nearly linearly |
 
 The TPOT curve is much flatter than TTFT. This supports the expected separation between prefill and decode: prompt length strongly affects prefill/TTFT, while output length mostly extends total latency by repeating decode steps.
+
+### Throughput vs. Concurrency
+
+![Throughput vs concurrency](../assets/projects/llm-serving/repo-throughput-vs-concurrency.png)
+
+Concurrency sweep setting: 20 total requests, 128 input tokens per request, 64 generated tokens per request.
+
+| Concurrency | Requests/sec | Tokens/sec | Wall time (sec) | Observation |
+|---:|---:|---:|---:|---|
+| 1 | 0.4000 | 25.60 | 49.999 | Best throughput in this run |
+| 2 | 0.3674 | 23.51 | 54.436 | Throughput begins to drop |
+| 4 | 0.3289 | 21.05 | 60.803 | More contention, lower token throughput |
+| 8 | 0.2882 | 18.44 | 69.400 | Higher concurrency reduces completed requests/sec |
+| 16 | 0.2522 | 16.14 | 79.316 | Worst throughput and longest wall time |
+
+### Latency vs. Concurrency
+
+![Average latency vs concurrency](../assets/projects/llm-serving/repo-avg-latency-vs-concurrency.png)
+
+| Concurrency | Average latency (sec) | P95 latency (sec) | Observation |
+|---:|---:|---:|---|
+| 1 | 2.499 | 2.920 | Low queueing/contention baseline |
+| 2 | 5.437 | 6.794 | Latency roughly doubles |
+| 4 | 12.140 | 14.708 | Tail latency grows sharply |
+| 8 | 25.457 | 29.433 | Requests spend much longer under contention |
+| 16 | 56.324 | 67.718 | Severe latency degradation |
+
+The concurrency sweep is the most important result from the repo. In this benchmark, increasing concurrency did not improve throughput; it reduced requests/sec and tokens/sec while sharply increasing average and P95 latency. This indicates that the tested serving setup was already resource-constrained, so more simultaneous requests mainly added contention and queueing rather than useful parallelism.
 
 ## Main Takeaways
 
@@ -256,6 +296,7 @@ The TPOT curve is much flatter than TTFT. This supports the expected separation 
 - Prefill is usually compute-heavy because it processes the full prompt.
 - Decode is often memory-bound because each step repeatedly reads and updates the KV cache.
 - Concurrency can improve throughput through batching, but it can also increase queueing delay and tail latency.
+- In this repo's concurrency experiment, higher concurrency reduced throughput and sharply increased both average latency and P95 latency.
 
 ## Skills Demonstrated
 
@@ -268,11 +309,13 @@ The TPOT curve is much flatter than TTFT. This supports the expected separation 
 
 ## Experiment Result Analysis
 
-The simulation results match the expected behavior of autoregressive LLM serving. TTFT grows strongly with prompt length because prefill must process the entire prompt and construct the initial KV cache before the first token can be produced. The 1024-token prompt shows the largest TTFT, which reflects the cost of full-sequence attention and initial cache construction.
+The benchmark results match the expected behavior of autoregressive LLM serving. TTFT grows strongly with prompt length because prefill must process the entire prompt and construct the initial KV cache before the first token can be produced. The 1024-token prompt shows the largest TTFT, which reflects the cost of full-sequence attention and initial cache construction.
 
 TPOT is comparatively stable across output lengths because each decode step performs a similar unit of work: read the current KV cache, process the latest generated token, sample the next token, and append new cache entries. Output length still increases total latency, but it does so by repeating decode steps rather than by making each individual step dramatically more expensive.
 
-Concurrency adds another layer. More concurrent requests can create batching opportunities and improve GPU utilization, especially during decode. At the same time, concurrency can increase TTFT through queueing delay, prefill contention, and scheduler batching delay. This is why serving systems must tune batching, queueing, and concurrency limits according to the target latency objective rather than maximizing throughput alone.
+Concurrency adds another layer. In theory, more concurrent requests can create batching opportunities and improve GPU utilization, especially during decode. In this benchmark, however, higher concurrency reduced throughput from 0.4000 requests/sec at concurrency 1 to 0.2522 requests/sec at concurrency 16, while P95 latency increased from 2.92 sec to 67.72 sec. That pattern suggests the serving setup was dominated by contention, queueing, and resource saturation rather than by beneficial batching.
+
+This concurrency result is useful because it shows why serving systems need explicit admission control and concurrency limits. More in-flight requests are not automatically better. Once the GPU or scheduler is saturated, additional concurrency can lower throughput and dramatically worsen tail latency.
 
 Overall, the benchmark separates three different questions that are often mixed together: how fast the first token appears, how fast later tokens stream, and how much work the system can sustain under concurrent load. That separation makes it easier to diagnose whether an inference bottleneck is dominated by prefill compute, decode memory bandwidth, queueing, batching policy, or tail-latency behavior.
 
