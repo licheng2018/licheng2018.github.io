@@ -2,8 +2,7 @@
 
 This project builds a lightweight benchmark and analysis workflow for LLM inference serving. The goal is to explain how prompt length, output length, prefill, decode, queueing, batching, and concurrency affect user-visible latency and serving throughput.
 
-[Download the original slides PDF](../assets/projects/llm-serving/serving-bench.pdf)  
-[Download the original PowerPoint deck](../assets/projects/llm-serving/serving-bench.pptx)
+[Download the original slides PDF](../assets/projects/llm-serving/serving-bench.pdf)
 
 ## Project Goal
 
