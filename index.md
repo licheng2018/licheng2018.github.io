@@ -16,7 +16,7 @@ I focus on **ML systems**, **AI infrastructure**, **compiler/runtime analysis**,
 
 ### [PyTorch Compiler and AI Compiler Pipeline](projects/pytorch-compiler.md)
 
-Built a compiler/runtime benchmarking project and toy AI compiler pipeline to study how PyTorch 2.x compilation, graph capture, operator fusion, and Triton code generation affect GPU performance for ML and attention workloads.
+Built a compiler/runtime benchmarking project and toy AI compiler pipeline to study PyTorch 2.x compilation, TorchDynamo graph capture, FX graphs, AOTAutograd, TorchInductor-generated Triton/CUDA kernels, graph breaks, dynamic-shape guards, operator fusion, and GPU runtime behavior.
 
 ### [LLM Inference Serving Benchmark](projects/llm-serving.md)
 
