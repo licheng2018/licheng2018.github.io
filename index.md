@@ -1,5 +1,7 @@
 # Licheng Zheng
 
+<img src="assets/profile/licheng-profile.jpg" alt="Licheng Zheng" width="190" align="right">
+
 Ph.D. Candidate in Electrical Engineering at École de technologie supérieure (ÉTS), Montreal.
 
 I work at the intersection of **machine learning systems**, **AI infrastructure**, **performance engineering**, **GPU computing**, and **distributed optimization**. My recent projects span PyTorch compiler/runtime analysis, CUDA and Triton kernel optimization, LLM inference serving, distributed training, quantization, and communication-aware system benchmarking. I enjoy building practical systems, measuring them rigorously, and turning performance bottlenecks into clear engineering decisions across ML infrastructure, backend systems, and applied AI workloads.
