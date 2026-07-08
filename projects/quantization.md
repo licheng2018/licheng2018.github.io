@@ -2,8 +2,7 @@
 
 Built an LLM quantization benchmark pipeline to compare FP16 inference with INT8 weight quantization under consistent prompt, output-length, runtime, and GPU settings, then analyzed when quantization helps deployment and when it slows inference down.
 
-- Project page: [LLM Quantization Benchmark and Inference Optimization](https://licheng2018.github.io/projects/quantization.html)
-- Source code: [licheng2018/Quantization-Deployment-Basics](https://github.com/licheng2018/Quantization-Deployment-Basics)
+- Source code: [github](https://github.com/licheng2018/Quantization-Deployment-Basics)
 - Result data: [benchmark-results.csv](../assets/projects/quantization/benchmark-results.csv)
 
 ## Project Scope

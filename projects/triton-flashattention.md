@@ -2,7 +2,7 @@
 
 This project implements and analyzes Triton kernels for vector operations, row-wise ML kernels, naive attention, paged KV-cache attention, and a mini FlashAttention-style kernel. The main goal is to understand why naive attention is memory-heavy and how online softmax plus tiled Q/K/V loading reduces DRAM traffic.
 
-Source repo: [licheng2018/triton](https://github.com/licheng2018/triton)
+Source repo: [github](https://github.com/licheng2018/triton)
 
 ## Project Goal
 

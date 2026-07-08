@@ -2,8 +2,7 @@
 
 Built a hands-on distributed systems benchmarking project to study how NCCL collectives, data parallelism, tensor parallelism, and pipeline parallelism shape the communication cost of large-model training.
 
-- Project page: [NCCL Parallelism and Communication Benchmarking](https://licheng2018.github.io/projects/nccl-parallelism.html)
-- Source code: [licheng2018/NCCL](https://github.com/licheng2018/NCCL)
+- Source code: [github](https://github.com/licheng2018/NCCL)
 
 ## Project Scope
 
