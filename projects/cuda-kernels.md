@@ -62,6 +62,192 @@ The repo is organized as a progression from CUDA fundamentals to ML operator ker
 | Week 1 operators | `project/week1_matmul_laynorm_softmax/*` | Matrix multiplication, loop unrolling, Nsight profiling, LayerNorm, and Softmax kernels. |
 | PyTorch extensions | `project/week2_pytorch_extension/*` | C++/CUDA extension loading, TensorAccessor usage, LayerNorm extension, autograd checks, and fused Bias+GELU. |
 
+## Vector Addition: CUDA Programming Foundation
+
+The vector-addition notebook is the introductory experiment in the CUDA project. It uses the simplest possible elementwise operation:
+
+```text
+C[i] = A[i] + B[i]
+```
+
+The goal is not to prove that vector addition is a complex algorithm. Instead, the notebook establishes the CUDA development workflow used by later kernels such as MatMul, LayerNorm, Softmax, and FlashAttention-style attention.
+
+### What This Experiment Teaches
+
+| Topic | What the notebook demonstrates |
+|---|---|
+| CUDA execution hierarchy | How threads, blocks, and grids are organized. |
+| Thread-to-data mapping | How a global thread index maps one GPU thread to one output element. |
+| Launch configuration | How to choose `blockDim`, `gridDim`, and use ceiling division to cover an input. |
+| Boundary handling | Why `if (id < N)` is required when the final block has extra threads. |
+| Memory management | Difference between unified memory and explicit host/device memory allocation. |
+| Grid-stride loop | How fixed-size grids can process arrays larger than the number of launched threads. |
+| Correctness workflow | How to compare GPU results against a CPU reference with a tolerance. |
+| Error handling | How to check launch errors and asynchronous device execution errors. |
+
+### Basic One-Thread-Per-Element Kernel
+
+The first implementation maps one CUDA thread to one output element:
+
+```cpp
+__global__ void vector_add(float* a, float* b, float* c, int n) {
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (id < n) {
+        c[id] = a[id] + b[id];
+    }
+}
+```
+
+The key indexing expression is:
+
+```cpp
+int id = blockIdx.x * blockDim.x + threadIdx.x;
+```
+
+This converts a serial CPU loop into a parallel GPU mapping:
+
+| CPU version | CUDA version |
+|---|---|
+| One loop processes all elements serially. | Many GPU threads process elements in parallel. |
+| `for (int i = 0; i < N; i++)` | `id = blockIdx.x * blockDim.x + threadIdx.x` |
+| `C[i] = A[i] + B[i]` | `C[id] = A[id] + B[id]` |
+
+For the basic experiment:
+
+| Configuration | Value |
+|---|---:|
+| `N` | 1024 elements |
+| Threads per block | 256 |
+| Blocks | 4 |
+| Total launched threads | 1024 |
+| Memory model | Unified memory via `cudaMallocManaged` |
+| Example output | `0 3 6 9 12 15 18 21 24 27` |
+
+The first ten GPU outputs match the CPU reference outputs.
+
+### Grid-Stride Loop Kernel
+
+The second implementation introduces a more reusable CUDA pattern:
+
+```cpp
+__global__ void vectorAddGridStride(
+    const float* A,
+    const float* B,
+    float* C,
+    int N
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+
+    for (int i = tid; i < N; i += stride) {
+        C[i] = A[i] + B[i];
+    }
+}
+```
+
+A grid-stride loop decouples the input size from the number of launched threads. Each thread starts from its global thread ID and advances by the total grid size:
+
+```text
+Thread 0 -> 0, stride, 2*stride, ...
+Thread 1 -> 1, stride + 1, 2*stride + 1, ...
+Thread 2 -> 2, stride + 2, 2*stride + 2, ...
+```
+
+This pattern is important because it preserves coalesced access within each loop iteration. Adjacent threads in the same warp still access adjacent elements such as `A[0]`, `A[1]`, ..., `A[31]`, then `A[stride]`, `A[stride + 1]`, and so on.
+
+### Host-Device Workflow
+
+The more complete version uses explicit memory management rather than unified memory:
+
+```text
+Allocate host memory
+        ↓
+Initialize input arrays
+        ↓
+Allocate device memory with cudaMalloc
+        ↓
+Copy A and B from host to device
+        ↓
+Launch CUDA kernel
+        ↓
+Check launch error with cudaGetLastError
+        ↓
+Synchronize with cudaDeviceSynchronize
+        ↓
+Copy C from device to host
+        ↓
+Compute CPU reference output
+        ↓
+Validate GPU output against CPU output
+        ↓
+Free host and device memory
+```
+
+The notebook also uses a CUDA error-checking macro around CUDA API calls and checks both:
+
+- `cudaGetLastError()` for immediate launch-related errors.
+- `cudaDeviceSynchronize()` for asynchronous execution errors such as illegal memory access.
+
+### Correctness Result
+
+The grid-stride experiment uses a larger input:
+
+| Item | Value |
+|---|---:|
+| `N` | `2^24 = 16,777,216` elements |
+| Approximate bytes per array | 64 MiB |
+| Device arrays | `dA`, `dB`, `dC` |
+| Approximate device-array memory | 192 MiB |
+| CPU reference | Serial vector addition |
+| Tolerance | `1e-6` |
+| Result | `Correctness: PASS` |
+
+This validates that the GPU grid-stride kernel matched the CPU reference for approximately 16.7 million floating-point elements.
+
+### What This Experiment Does Not Claim
+
+This notebook should be described as a correctness and CUDA-programming-pattern experiment, not as a performance-optimization result.
+
+It does not yet report:
+
+- GPU kernel latency.
+- CPU latency.
+- Host-to-device or device-to-host transfer time.
+- Effective memory bandwidth.
+- Block-size sweeps.
+- CPU-GPU speedup.
+- Nsight Compute memory-transaction metrics.
+
+The grid-stride loop is therefore not claimed to be faster than the basic kernel. Its main contribution is scalability, reusable launch configuration, and a production-style indexing pattern.
+
+One experimental nuance is that the current grid-stride configuration still launches enough threads to cover the whole input:
+
+```cpp
+int blockSize = 256;
+int gridSize = (N + blockSize - 1) / blockSize;
+```
+
+Because `gridSize * blockSize >= N`, most threads execute the loop only once. A clearer demonstration of thread reuse would fix the grid size, for example:
+
+```cpp
+int blockSize = 256;
+int gridSize = 256;
+```
+
+Then only 65,536 threads would process 16,777,216 elements, and each thread would process roughly 256 elements through the grid-stride loop.
+
+### Key Takeaways
+
+| Takeaway | Why it matters later |
+|---|---|
+| Global thread indexing | Foundation for elementwise kernels, activation functions, residual adds, and tensor scaling. |
+| Boundary checks | Required for safe kernels when input sizes do not align with block sizes. |
+| Grid-stride loops | Reusable pattern for scalable CUDA kernels and fixed launch configurations. |
+| Coalesced access | Introduces the memory-access reasoning later used in Softmax, LayerNorm, and attention kernels. |
+| Correctness before performance | Establishes the validation workflow reused for more complex ML operators. |
+| Explicit memory management | Prepares for measuring H2D, kernel, and D2H costs independently. |
+
 ## Matrix Multiplication
 
 Matrix multiplication computes:
