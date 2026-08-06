@@ -1,10 +1,46 @@
-# CUDA Kernel Optimization for ML Operators
+# CUDA Kernel Development and Transformer Operator Optimization
 
-This project implements and analyzes CUDA kernels for core ML operators, with a focus on memory access patterns, tiling, warp-level reductions, shared memory reuse, register-level optimization, profiling, and PyTorch C++/CUDA extension integration.
+This project implements and analyzes CUDA kernels for core ML and Transformer operators, with a focus on correctness, memory access patterns, tiling, warp-level reductions, shared memory reuse, register-level optimization, profiling, and PyTorch C++/CUDA extension integration.
 
 Source repo: [cuda_projects](https://github.com/licheng2018/cuda_projects/tree/main)
 
-## Project Goal
+## Project Overview
+
+Modern deep learning workloads are often limited not only by arithmetic throughput, but also by memory traffic, synchronization overhead, kernel launch overhead, and inefficient mapping of computation onto GPU hardware.
+
+The goal of this project is to study the complete lifecycle of GPU operator development, starting from fundamental CUDA programming and gradually progressing toward production-style implementations of commonly used Transformer operators.
+
+Instead of focusing only on writing functionally correct kernels, this project emphasizes three equally important aspects:
+
+- **Correctness:** ensuring that custom CUDA kernels produce results consistent with CPU or PyTorch reference implementations.
+- **Performance:** improving memory access, parallel reduction, data reuse, and kernel organization.
+- **Integration:** exposing CUDA kernels as reusable PyTorch C++/CUDA extensions.
+
+The project was designed as an end-to-end learning and engineering exercise for GPU kernel development, machine learning systems, and accelerator-oriented software optimization.
+
+## Project Scope
+
+The project spans both low-level GPU programming and higher-level machine learning operator engineering:
+
+- CUDA execution model and kernel launch configuration.
+- Thread, warp, block, and grid-level workload mapping.
+- Grid-stride loops and scalable kernel design.
+- GPU memory hierarchy and memory-access optimization.
+- Coalesced global-memory access.
+- Shared-memory tiling and data reuse.
+- Shared-memory bank conflicts.
+- Register reuse and loop unrolling.
+- Warp-level and block-level reductions.
+- Synchronization and race-condition avoidance.
+- Softmax and online Softmax.
+- LayerNorm forward and backward.
+- Matrix multiplication using shared-memory tiling.
+- Kernel fusion, including fused Bias + GELU.
+- PyTorch C++/CUDA extension development.
+- Correctness and gradient validation.
+- Benchmarking and profiler-based bottleneck analysis.
+
+## Operator Development Goals
 
 The goal was to understand how GPU kernel design choices affect the performance of ML operators that appear repeatedly in transformer workloads:
 
