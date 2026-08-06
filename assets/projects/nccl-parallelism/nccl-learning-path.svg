@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="620" viewBox="0 0 1280 620">
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .subtitle { font: 500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #52616f; }
+      .box { fill: #ffffff; stroke: #ccd6e0; stroke-width: 2; rx: 10; }
+      .blue { fill: #e8f3ff; stroke: #6aa9e9; }
+      .green { fill: #ecf8ef; stroke: #69b678; }
+      .amber { fill: #fff5dc; stroke: #d99a24; }
+      .red { fill: #fff0f0; stroke: #d36b6b; }
+      .label { font: 700 21px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2933; }
+      .text { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #34495e; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #52616f; }
+      .arrow { stroke: #607080; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#607080"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="620"/>
+  <text class="title" x="60" y="70">NCCL Communication and Model-Parallel Learning Path</text>
+  <text class="subtitle" x="60" y="103">From raw collective benchmarks to DDP/FSDP communication patterns, tensor parallelism, and pipeline scheduling.</text>
+
+  <rect class="box blue" x="70" y="165" width="250" height="160"/>
+  <text class="label" x="95" y="202">Level 1</text>
+  <text class="label" x="95" y="230">AllReduce Benchmark</text>
+  <text class="text" x="95" y="263">nccl-experiments.ipynb</text>
+  <text class="text" x="95" y="288">8 B to 512 MB scan</text>
+  <text class="small" x="95" y="313">latency-bound to bandwidth-bound</text>
+
+  <rect class="box green" x="380" y="165" width="250" height="160"/>
+  <text class="label" x="405" y="202">Level 2</text>
+  <text class="label" x="405" y="230">Collective Decomposition</text>
+  <text class="text" x="405" y="263">ReduceScatter + AllGather</text>
+  <text class="text" x="405" y="288">DDP vs FSDP primitives</text>
+  <text class="small" x="405" y="313">full gradients vs sharded states</text>
+
+  <rect class="box amber" x="690" y="165" width="250" height="160"/>
+  <text class="label" x="715" y="202">Level 3</text>
+  <text class="label" x="715" y="230">Tensor Parallel MLP</text>
+  <text class="text" x="715" y="263">column parallel fc1</text>
+  <text class="text" x="715" y="288">row parallel fc2</text>
+  <text class="small" x="715" y="313">one AllReduce at output boundary</text>
+
+  <rect class="box red" x="1000" y="165" width="250" height="160"/>
+  <text class="label" x="1025" y="202">Level 4</text>
+  <text class="label" x="1025" y="230">Pipeline Parallel Toy</text>
+  <text class="text" x="1025" y="263">layer-stage split</text>
+  <text class="text" x="1025" y="288">microbatch flow</text>
+  <text class="small" x="1025" y="313">bubbles, fill, steady state, drain</text>
+
+  <path class="arrow" d="M 320 245 L 380 245"/>
+  <path class="arrow" d="M 630 245 L 690 245"/>
+  <path class="arrow" d="M 940 245 L 1000 245"/>
+
+  <rect class="box" x="175" y="420" width="930" height="112"/>
+  <text class="label" x="205" y="457">End-to-end interpretation</text>
+  <text class="text" x="205" y="488">DDP uses AllReduce for replicated gradient synchronization. FSDP/ZeRO use AllGather and ReduceScatter to keep model states sharded.</text>
+  <text class="text" x="205" y="515">Tensor parallelism inserts collectives inside layers. Pipeline parallelism moves activations between stage boundaries and relies on microbatch scheduling.</text>
+</svg>

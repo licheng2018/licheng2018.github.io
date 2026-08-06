@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820">
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+      .subtitle { font: 500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #52616f; }
+      .box { fill: #ffffff; stroke: #ccd6e0; stroke-width: 2; rx: 10; }
+      .boxBlue { fill: #e8f3ff; stroke: #6aa9e9; stroke-width: 2; rx: 10; }
+      .boxGreen { fill: #ecf8ef; stroke: #69b678; stroke-width: 2; rx: 10; }
+      .boxAmber { fill: #fff5dc; stroke: #d99a24; stroke-width: 2; rx: 10; }
+      .boxRed { fill: #fff0f0; stroke: #d36b6b; stroke-width: 2; rx: 10; }
+      .label { font: 700 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2933; }
+      .text { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #34495e; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #52616f; }
+      .arrow { stroke: #607080; stroke-width: 2.4; fill: none; marker-end: url(#arrowhead); }
+      .dash { stroke: #607080; stroke-width: 2.2; stroke-dasharray: 7 6; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#607080"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="820"/>
+
+  <text class="title" x="60" y="70">GPT-Neo-1.3B Distributed Training Benchmark Architecture</text>
+  <text class="subtitle" x="60" y="103">Code path from multi-GPU launch to DDP/FSDP training, checkpointing, accumulation, and metrics.</text>
+
+  <rect class="boxBlue" x="60" y="145" width="245" height="118"/>
+  <text class="label" x="84" y="178">Run Scripts</text>
+  <text class="text" x="84" y="207">run_ddp_wikitext.sh</text>
+  <text class="text" x="84" y="229">run_fsdp_wikitext.sh</text>
+  <text class="small" x="84" y="250">sweep strategy, checkpoint, MB, ACC</text>
+
+  <rect class="boxBlue" x="360" y="145" width="245" height="118"/>
+  <text class="label" x="384" y="178">torchrun Launch</text>
+  <text class="text" x="384" y="207">one process per GPU</text>
+  <text class="text" x="384" y="229">RANK, LOCAL_RANK, WORLD_SIZE</text>
+  <text class="small" x="384" y="250">NCCL process group</text>
+
+  <rect class="boxGreen" x="660" y="145" width="245" height="118"/>
+  <text class="label" x="684" y="178">Model Setup</text>
+  <text class="text" x="684" y="207">GPT-Neo-1.3B</text>
+  <text class="text" x="684" y="229">train mode, use_cache=False</text>
+  <text class="small" x="684" y="250">Hugging Face tokenizer and model</text>
+
+  <rect class="boxGreen" x="960" y="145" width="245" height="118"/>
+  <text class="label" x="984" y="178">Dataset Pipeline</text>
+  <text class="text" x="984" y="207">WikiText-103 or synthetic</text>
+  <text class="text" x="984" y="229">fixed seq_len token stream</text>
+  <text class="small" x="984" y="250">shifted causal LM labels</text>
+
+  <path class="arrow" d="M 305 204 L 360 204"/>
+  <path class="arrow" d="M 605 204 L 660 204"/>
+  <path class="arrow" d="M 905 204 L 960 204"/>
+
+  <rect class="boxAmber" x="160" y="355" width="260" height="134"/>
+  <text class="label" x="184" y="389">Precision Layer</text>
+  <text class="text" x="184" y="419">FP16 autocast</text>
+  <text class="text" x="184" y="443">GradScaler</text>
+  <text class="small" x="184" y="468">scale, unscale, clip, update</text>
+
+  <rect class="boxAmber" x="510" y="355" width="260" height="134"/>
+  <text class="label" x="534" y="389">Distributed Strategy</text>
+  <text class="text" x="534" y="419">DDP full model replica</text>
+  <text class="text" x="534" y="443">or FSDP FULL_SHARD</text>
+  <text class="small" x="534" y="468">AllReduce or AllGather + ReduceScatter</text>
+
+  <rect class="boxAmber" x="860" y="355" width="260" height="134"/>
+  <text class="label" x="884" y="389">Training Knobs</text>
+  <text class="text" x="884" y="419">microbatch, grad_accum</text>
+  <text class="text" x="884" y="443">checkpoint on/off</text>
+  <text class="small" x="884" y="468">fixed effective global batch</text>
+
+  <path class="arrow" d="M 1082 263 C 1082 320 990 322 990 355"/>
+  <path class="arrow" d="M 782 263 C 782 318 640 318 640 355"/>
+  <path class="arrow" d="M 482 263 C 482 318 290 318 290 355"/>
+  <path class="arrow" d="M 420 422 L 510 422"/>
+  <path class="arrow" d="M 770 422 L 860 422"/>
+
+  <rect class="boxRed" x="160" y="585" width="300" height="145"/>
+  <text class="label" x="184" y="620">Accumulation Loop</text>
+  <text class="text" x="184" y="650">forward and backward per microbatch</text>
+  <text class="text" x="184" y="674">loss divided by grad_accum</text>
+  <text class="small" x="184" y="699">DDP no_sync before final microbatch</text>
+
+  <rect class="boxRed" x="530" y="585" width="300" height="145"/>
+  <text class="label" x="554" y="620">Optimizer Step</text>
+  <text class="text" x="554" y="650">gradient sync on final accumulation</text>
+  <text class="text" x="554" y="674">gradient clipping</text>
+  <text class="small" x="554" y="699">optimizer.step and zero_grad</text>
+
+  <rect class="boxRed" x="900" y="585" width="300" height="145"/>
+  <text class="label" x="924" y="620">Metrics</text>
+  <text class="text" x="924" y="650">loss, step time, tokens/s</text>
+  <text class="text" x="924" y="674">max allocated and reserved memory</text>
+  <text class="small" x="924" y="699">rank-averaged reporting</text>
+
+  <path class="arrow" d="M 990 489 C 990 545 310 535 310 585"/>
+  <path class="arrow" d="M 460 657 L 530 657"/>
+  <path class="arrow" d="M 830 657 L 900 657"/>
+
+  <path class="dash" d="M 1050 730 C 1050 780 305 780 305 730"/>
+  <text class="small" x="548" y="785">Repeat for sweep configurations: DDP/FSDP, checkpoint on/off, MB 1/2/4/8, ACC 16/8/4/2</text>
+</svg>

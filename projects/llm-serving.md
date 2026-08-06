@@ -4,6 +4,18 @@ This project builds a lightweight benchmark and analysis workflow for LLM infere
 
 [Download the original slides PDF](../assets/projects/llm-serving/serving-bench.pdf)
 
+Source repo: [github](https://github.com/licheng2018/serving-benchmark/tree/main)
+
+## Contents
+
+| Area | Jump to sections |
+|---|---|
+| Overview | [Project Goal](#project-goal) · [Experimental Setup](#experimental-setup) · [Benchmark Design](#benchmark-design) |
+| Serving Metrics | [LLM Serving Pipeline](#llm-serving-pipeline) · [Metrics](#metrics) · [Time to First Token](#time-to-first-token) · [Time Per Output Token](#time-per-output-token) · [Tokens Per Second and Requests Per Second](#tokens-per-second-and-requests-per-second) · [End-to-End Request Latency](#end-to-end-request-latency) · [P95 Latency](#p95-latency) |
+| Prefill and Decode | [Metric Timeline Summary](#metric-timeline-summary) · [Prefill](#prefill) · [Decode](#decode) · [Prefill vs. Decode](#prefill-vs-decode) · [KV Cache Interpretation](#kv-cache-interpretation) |
+| Experiments | [Concurrency](#concurrency) · [Benchmark Repository Results](#benchmark-repository-results) · [TTFT vs. Prompt Length](#ttft-vs-prompt-length) · [TPOT vs. Output Length](#tpot-vs-output-length) · [Throughput vs. Concurrency](#throughput-vs-concurrency) · [Latency vs. Concurrency](#latency-vs-concurrency) |
+| Review | [Benchmark Limitations and Scope](#benchmark-limitations-and-scope) · [Main Takeaways](#main-takeaways) · [Skills Demonstrated](#skills-demonstrated) · [Experiment Result Analysis](#experiment-result-analysis) |
+
 ## Project Goal
 
 The project focuses on practical serving metrics rather than model accuracy. It studies what happens after a user sends a prompt to an inference service:
@@ -15,6 +27,114 @@ The project focuses on practical serving metrics rather than model accuracy. It 
 - Which metrics are useful for diagnosing serving bottlenecks.
 
 ![LLM pipeline](../assets/projects/llm-serving/llm-pipeline.png)
+
+## Experimental Setup
+
+The benchmark uses a single-GPU Hugging Face inference baseline to study model-side serving behavior under controlled prompt length, output length, and concurrency settings.
+
+| Component | Setting |
+|---|---|
+| GPU | 1 x Tesla T4, 15 GB |
+| Model | `Qwen/Qwen2.5-0.5B-Instruct` |
+| Precision | FP16 |
+| Framework | Hugging Face Transformers |
+| Device | Single CUDA GPU |
+| Decoding | Greedy decoding |
+| Sampling | `do_sample=False` |
+| KV cache | `use_cache=True` |
+
+The model is loaded in FP16 and placed on GPU:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16
+)
+
+model = model.to("cuda")
+model.eval()
+```
+
+Generation uses deterministic greedy decoding:
+
+```python
+do_sample = False
+use_cache = True
+```
+
+This avoids random sampling noise and enables the KV cache so decode does not recompute historical K/V projections for every generated token.
+
+This project is different from the distributed training project:
+
+| Project | Focus | Main metrics |
+|---|---|---|
+| `gpt_training` | Training performance with DDP/FSDP/gradient accumulation | step time, tokens/sec, peak memory |
+| `serving-benchmark` | Inference serving performance | TTFT, TPOT, latency, throughput, concurrency behavior |
+
+The current repository implements the FP16 Hugging Face baseline, length sweeps, and concurrency benchmark. It should not be described as already containing completed AWQ, GPTQ, INT8, or FP8 comparison results unless those experiments are later implemented and saved.
+
+## Benchmark Design
+
+The benchmark has three main parts:
+
+| Part | Notebook / workflow | Purpose |
+|---|---|---|
+| Minimal benchmark | `1.minimal_benchmark copy.ipynb` | Sanity-check model loading, tokenization, generation, timing, FP16 execution, and KV-cache use. |
+| Prompt/output length sweep | `2_sweep_benchmark.ipynb` | Measure how input length affects TTFT and how output length affects decode latency and total latency. |
+| Concurrency benchmark | `3_concurrency_benchmark.ipynb` | Measure how simultaneous requests affect wall time, average latency, P95 latency, requests/sec, and tokens/sec. |
+
+The minimal benchmark uses a prompt such as:
+
+```text
+Explain the role of attention in transformer models.
+```
+
+It is mainly a pipeline sanity check:
+
+- The model loads successfully on the T4.
+- Tokenizer and model inputs are correct.
+- `generate()` runs without NaN or OOM.
+- FP16 inference works.
+- Output text is reasonable.
+- KV cache can be enabled.
+
+The sweep benchmark uses:
+
+```text
+prompt_lengths = [32, 128, 512, 1024]
+output_lengths = [32, 64, 128, 256]
+num_runs = 3
+num_warmup = 1
+concurrency = 1
+use_kv_cache = True
+```
+
+Prompt length and output length are swept separately because they stress different stages:
+
+| Sweep | Fixed variable | Changed variable | Expected effect |
+|---|---|---|---|
+| Prompt-length sweep | Output length fixed | Prompt length: 32, 128, 512, 1024 | Longer prompts increase prefill work, KV-cache initialization, and TTFT. |
+| Output-length sweep | Prompt length fixed | Output length: 32, 64, 128, 256 | Longer outputs increase decode steps and end-to-end latency. |
+
+The concurrency benchmark fixes the workload and changes the number of simultaneous requests:
+
+```text
+input tokens = 128
+output tokens = 64
+total requests = 20
+concurrency = 1, 2, 4, 8, 16
+```
+
+For each setting, the benchmark records:
+
+| Recorded field | Meaning |
+|---|---|
+| Wall time | Total time to finish the request set. |
+| Average latency | Mean per-request end-to-end latency. |
+| P95 latency | Tail latency threshold for the slowest normal requests. |
+| Requests/sec | Completed requests per second. |
+| Output tokens/sec | Aggregate generated token throughput. |
+| Per-request records | Individual request latency and output-token speed. |
 
 ## LLM Serving Pipeline
 
@@ -183,6 +303,35 @@ First token y1 + KV cache
 
 TPOT mainly reflects the sustained generation speed of this decode stage.
 
+## KV Cache Interpretation
+
+The benchmark enables:
+
+```text
+use_cache=True
+```
+
+When generating token `t`, the model does not need to recompute the K/V projections for all previous tokens. Instead, it:
+
+```text
+computes Q, K, V for the new token
+appends the new K/V to the cache
+uses the new Q to attend over historical K/V
+reads historical V to produce the output
+```
+
+KV cache saves repeated K/V projection work for historical tokens. However, it does not make decode independent of context length. Each decode step still attends over a growing cache:
+
+```text
+context length increases
+        ↓
+KV-cache memory increases
+        ↓
+each decode step reads more K/V
+        ↓
+TPOT may gradually increase
+```
+
 ## Prefill vs. Decode
 
 ![Prefill vs decode comparison table](../assets/projects/llm-serving/prefill-decode-table.png)
@@ -286,6 +435,43 @@ Concurrency sweep setting: 20 total requests, 128 input tokens per request, 64 g
 
 The concurrency sweep is the most important result from the repo. In this benchmark, increasing concurrency did not improve throughput; it reduced requests/sec and tokens/sec while sharply increasing average and P95 latency. This indicates that the tested serving setup was already resource-constrained, so more simultaneous requests mainly added contention and queueing rather than useful parallelism.
 
+## Benchmark Limitations and Scope
+
+This benchmark should be described precisely as a Hugging Face FP16 baseline, not as a production serving engine.
+
+| Limitation | Meaning |
+|---|---|
+| Not a continuous-batching engine | The code uses `transformers.model.generate()` rather than vLLM, TensorRT-LLM, TGI, or SGLang. |
+| No PagedAttention or paged KV cache | KV cache is enabled, but the benchmark does not implement production-style KV block management. |
+| No request preemption or iteration-level scheduler | Independent requests are not dynamically merged into an optimized decode batch. |
+| Approximate model-side TTFT | The code measures a first-token timing path, but not full client-observed streaming TTFT with network, serialization, and serving scheduler delay. |
+| FP16 baseline only | The current repo does not contain completed AWQ, GPTQ, INT8, or FP8 comparison results. |
+| Small model | Qwen2.5-0.5B fits easily on T4, so Python overhead and scheduling overhead may be more visible than they would be for larger 7B/13B models. |
+
+The most important interpretation is that concurrency is not the same as batching.
+
+```text
+batch size:
+    multiple inputs explicitly combined in one model forward
+
+concurrency:
+    multiple independent requests exist at the same time
+```
+
+Concurrency becomes useful for throughput only when a serving engine converts independent requests into efficient GPU batches through scheduling. In this benchmark, multiple concurrent requests mostly compete for the same Hugging Face `generate()` path and single T4 GPU. That can introduce Python thread contention, CUDA work serialization, independent KV caches, extra kernel launches, stream/context contention, and small unbatched GEMMs.
+
+This is why the concurrency results show:
+
+```text
+concurrency increases
+        ↓
+average latency and P95 latency increase sharply
+        ↓
+requests/sec and tokens/sec decrease
+```
+
+That result is still valuable: it demonstrates why production LLM serving needs explicit batching, admission control, and scheduler design instead of simply allowing more simultaneous requests.
+
 ## Main Takeaways
 
 - TTFT is the best metric for first-response responsiveness.
@@ -296,6 +482,8 @@ The concurrency sweep is the most important result from the repo. In this benchm
 - Decode is often memory-bound because each step repeatedly reads and updates the KV cache.
 - Concurrency can improve throughput through batching, but it can also increase queueing delay and tail latency.
 - In this repo's concurrency experiment, higher concurrency reduced throughput and sharply increased both average latency and P95 latency.
+- The current implementation is an FP16 Hugging Face baseline, not a full continuous-batching serving engine.
+- Concurrency and batch size are different; concurrency only becomes efficient batching when a scheduler explicitly combines requests.
 
 ## Skills Demonstrated
 
@@ -315,6 +503,8 @@ TPOT is comparatively stable across output lengths because each decode step perf
 Concurrency adds another layer. In theory, more concurrent requests can create batching opportunities and improve GPU utilization, especially during decode. In this benchmark, however, higher concurrency reduced throughput from 0.4000 requests/sec at concurrency 1 to 0.2522 requests/sec at concurrency 16, while P95 latency increased from 2.92 sec to 67.72 sec. That pattern suggests the serving setup was dominated by contention, queueing, and resource saturation rather than by beneficial batching.
 
 This concurrency result is useful because it shows why serving systems need explicit admission control and concurrency limits. More in-flight requests are not automatically better. Once the GPU or scheduler is saturated, additional concurrency can lower throughput and dramatically worsen tail latency.
+
+The result also highlights the gap between independent concurrent `generate()` calls and production serving engines. A production engine with continuous batching may trade higher per-request latency for higher aggregate throughput. This baseline did not show that trade-off; it showed contention without batching benefit. That makes the result useful as a baseline and as motivation for future comparisons against vLLM, TensorRT-LLM, TGI, or SGLang.
 
 Overall, the benchmark separates three different questions that are often mixed together: how fast the first token appears, how fast later tokens stream, and how much work the system can sustain under concurrent load. That separation makes it easier to diagnose whether an inference bottleneck is dominated by prefill compute, decode memory bandwidth, queueing, batching policy, or tail-latency behavior.
 
