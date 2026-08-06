@@ -156,6 +156,88 @@ Thread 2 -> 2, stride + 2, 2*stride + 2, ...
 
 This pattern is important because it preserves coalesced access within each loop iteration. Adjacent threads in the same warp still access adjacent elements such as `A[0]`, `A[1]`, ..., `A[31]`, then `A[stride]`, `A[stride + 1]`, and so on.
 
+### Interview-Friendly Example: One Thread per Element vs Grid-Stride Loop
+
+This small example is useful for explaining the idea quickly in an interview.
+
+Assume:
+
+```text
+N = 16 elements
+blockDim.x = 4 threads per block
+gridDim.x = 2 blocks
+```
+
+The total number of launched threads is:
+
+```text
+2 blocks * 4 threads/block = 8 threads
+```
+
+With the basic one-thread-per-element kernel:
+
+```cpp
+int id = blockIdx.x * blockDim.x + threadIdx.x;
+
+if (id < N) {
+    C[id] = A[id] + B[id];
+}
+```
+
+the eight launched threads process only the first eight elements:
+
+```text
+Thread 0 -> element 0
+Thread 1 -> element 1
+Thread 2 -> element 2
+Thread 3 -> element 3
+Thread 4 -> element 4
+Thread 5 -> element 5
+Thread 6 -> element 6
+Thread 7 -> element 7
+```
+
+Elements `8` through `15` are not processed because no launched thread has a global ID larger than `7`. To process all 16 elements with this approach, the launch configuration must create at least 16 threads.
+
+With the grid-stride loop:
+
+```cpp
+int tid = blockIdx.x * blockDim.x + threadIdx.x;
+int stride = blockDim.x * gridDim.x;
+
+for (int i = tid; i < N; i += stride) {
+    C[i] = A[i] + B[i];
+}
+```
+
+the stride is:
+
+```text
+stride = 4 * 2 = 8
+```
+
+Each thread processes one element in the first pass and one more element in the second pass:
+
+```text
+Thread 0 -> elements 0 and 8
+Thread 1 -> elements 1 and 9
+Thread 2 -> elements 2 and 10
+Thread 3 -> elements 3 and 11
+Thread 4 -> elements 4 and 12
+Thread 5 -> elements 5 and 13
+Thread 6 -> elements 6 and 14
+Thread 7 -> elements 7 and 15
+```
+
+All 16 elements are covered even though only 8 threads were launched. The key point is:
+
+| Mapping style | Behavior |
+|---|---|
+| One thread per element | One thread computes exactly one output element; the launch must provide enough threads for the input size. |
+| Grid-stride loop | One thread can process multiple elements separated by the grid-wide stride; the launch configuration can be reused for larger inputs. |
+
+This does not automatically make the grid-stride version faster. Its value is scalability, flexibility, and a cleaner reusable CUDA kernel pattern.
+
 ### Host-Device Workflow
 
 The more complete version uses explicit memory management rather than unified memory:
