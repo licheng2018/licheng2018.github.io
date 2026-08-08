@@ -73,6 +73,8 @@ The repo is organized as a progression from CUDA fundamentals to ML operator ker
 
 ## Vector Addition: CUDA Programming Foundation
 
+![CUDA vector addition thread mapping and grid-stride loop](../assets/projects/cuda-kernels/vector-add-thread-mapping-grid-stride.png)
+
 The vector-addition notebook is the introductory experiment in the CUDA project. It uses the simplest possible elementwise operation:
 
 ```text
@@ -350,6 +352,8 @@ Then only 65,536 threads would process 16,777,216 elements, and each thread woul
 | Explicit memory management | Prepares for measuring H2D, kernel, and D2H costs independently. |
 
 ## CUDA Memory Coalescing: Strided Access Benchmark
+
+![CUDA memory coalescing warp access pattern and memory transactions](../assets/projects/cuda-kernels/memory-coalescing-warp-access-pattern.png)
 
 This notebook extends the previous Vector Addition project. The vector-addition notebook mainly answers:
 
@@ -938,6 +942,8 @@ Also, Nsight Systems is most useful for timeline-level analysis such as kernel d
 | Profiling should match the question | CUDA events measure kernel time; Nsight Systems shows timelines; Nsight Compute is better for transaction-level memory diagnostics. |
 
 ## CUDA Shared Memory and Bank Conflict
+
+![CUDA shared memory bank conflicts, strided access, and padding](../assets/projects/cuda-kernels/shared-memory-bank-conflict-overview.png)
 
 This notebook is the next step after the Vector Addition and Memory Coalescing notebooks:
 
@@ -1529,6 +1535,8 @@ and can reduce occupancy.
 | Occupancy still matters | Larger shared-memory tiles can improve reuse but reduce resident blocks and active warps. |
 
 ## CUDA Warp-Level Reduction
+
+![CUDA warp-level reduction with shuffle and block reduction](../assets/projects/cuda-kernels/warp-level-reduction-overview.png)
 
 This notebook is the next CUDA fundamentals experiment after Vector Addition, Memory Coalescing, and Shared Memory Bank Conflict:
 
@@ -2161,6 +2169,8 @@ diff <= atol + rtol * fabs(cpu)
 
 ## Loop Unrolling and Register Optimization
 
+![CUDA loop unrolling and register optimization mechanism, trade-off, and measured results](../assets/projects/cuda-kernels/loop-unrolling-register-optimization.png)
+
 This CUDA fundamentals experiment studies how loop unrolling, register-resident temporary variables, and constant-memory broadcast affect a dot-product style workload.
 
 The computation is:
@@ -2393,6 +2403,8 @@ meaningful part of the total bottleneck.
 
 ## Matrix Multiplication
 
+![CUDA matrix multiplication optimization overall pipeline](../assets/projects/cuda-kernels/matmul-optimization-overall-pipeline.png)
+
 Matrix multiplication computes:
 
 ```text
@@ -2407,6 +2419,8 @@ The CPU baseline has `O(M*N*K)` work and becomes too slow for large matrices. Th
 ![GPU matmul mapping](../assets/projects/cuda-kernels/matmul-gpu-mapping.png)
 
 ### GEMM Optimization Case Study
+
+![CUDA MatMul tile size trade-off between 16x16 and 32x32](../assets/projects/cuda-kernels/matmul-tile16-vs-tile32-tradeoff.png)
 
 **In this section:**
 
@@ -2706,6 +2720,10 @@ Naive result:
 This version is the baseline for the later optimization stages.
 
 ### Kernel 2: Block Tiling with Global Loads
+
+![CUDA shared-memory tiled MatMul dataflow](../assets/projects/cuda-kernels/matmul-tiled-dataflow.png)
+
+![CUDA MatMul naive versus tiled memory traffic and data reuse](../assets/projects/cuda-kernels/matmul-naive-vs-tiled-memory-traffic.png)
 
 The second version changes the loop structure:
 
@@ -3967,6 +3985,10 @@ Since `32 << 203`, naive attention lies on the memory-bound side of the roofline
 ![Attention roofline analysis](../assets/projects/cuda-kernels/attention-roofline.png)
 
 ## Profiling Focus
+
+![CUDA Nsight Compute profiling workflow from runtime symptom to root cause](../assets/projects/cuda-kernels/nsight-compute-profiling-workflow.png)
+
+![CUDA MatMul Nsight root-cause analysis for Tile16, Tile32, and Tile32 with padding](../assets/projects/cuda-kernels/nsight-matmul-root-cause-analysis.png)
 
 The project uses Nsight Compute concepts to connect code changes with GPU behavior:
 

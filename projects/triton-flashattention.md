@@ -8,11 +8,11 @@ Source repo: [github](https://github.com/licheng2018/triton)
 
 | Area | Jump to sections |
 |---|---|
-| Overview | [Project Goal](#project-goal) · [Repository Structure](#repository-structure) · [Chapter 1 Integration Scope](#chapter-1-integration-scope) |
+| Overview | [Project Goal](#project-goal) · [Repository Structure](#repository-structure) · [Project Component Map](#project-component-map) · [Chapter 1 Integration Scope](#chapter-1-integration-scope) |
 | Attention Theory | [Naive Attention and IO Cost](#naive-attention-and-io-cost) · [Arithmetic Intensity and T4 Roofline Example](#arithmetic-intensity-and-t4-roofline-example) · [Diagnosing Memory-Bound Behavior](#diagnosing-memory-bound-behavior) |
 | FlashAttention | [FlashAttention IO-Aware Design](#flashattention-io-aware-design) · [Triton Program Ownership and Tile Loop](#triton-program-ownership-and-tile-loop) · [Online Softmax](#online-softmax) · [Why Backward Recomputation Is Necessary](#why-backward-recomputation-is-necessary) · [FlashAttention-2 Design Ideas](#flashattention-2-design-ideas) · [Visual Explanations](#visual-explanations) |
 | Implementation Results | [Triton Warm-Up: Vector Add](#triton-warm-up-vector-add) · [Triton Row-Wise Kernel Tuning](#triton-row-wise-kernel-tuning) · [Naive Triton Attention Baseline](#naive-triton-attention-baseline) · [Naive Attention Profiling Sweep](#naive-attention-profiling-sweep) · [Paged KV-Cache Toy Attention](#paged-kv-cache-toy-attention) · [Mini FlashAttention-style Kernel](#mini-flashattention-style-kernel) · [FlashAttention v2 / Split-K Experiment](#flashattention-v2-split-k-experiment) |
-| Review | [Benchmark Methodology and Caveats](#benchmark-methodology-and-caveats) · [Interview Review Summary](#interview-review-summary) · [Main Takeaways](#main-takeaways) · [Experiment Result Analysis](#experiment-result-analysis) |
+| Review | [Benchmark Methodology and Caveats](#benchmark-methodology-and-caveats) · [Main Takeaways](#main-takeaways) · [Experiment Result Analysis](#experiment-result-analysis) |
 
 ## Project Goal
 
@@ -40,6 +40,55 @@ The work therefore focuses on:
 | `1. triton_vector_add.ipynb` | Triton vector add baseline and bandwidth benchmark. |
 | `2. triton_matmul_softmax_layernorm.ipynb` | Triton matmul, softmax, LayerNorm, tuning of `num_warps` and `num_stages`. |
 | `3. attention.ipynb` | Naive Triton attention, paged KV-cache toy example, mini FlashAttention kernel, v1 vs. v2/split-k experiment. |
+
+## Project Component Map
+
+```text
+IO-Aware Attention System with Triton and FlashAttention-style Optimization
+│
+├── 1. Triton Kernel Warm-Up
+│   ├── Vector Add
+│   ├── Row-wise Kernel Tuning
+│   └── Basic Triton launch / program-id / block-size experiments
+│
+├── 2. Naive Attention Baseline
+│   ├── QK^T score computation
+│   ├── Row-wise softmax
+│   ├── P @ V output computation
+│   └── PyTorch correctness comparison
+│
+├── 3. Attention Profiling and Benchmarking
+│   ├── Prompt / sequence-length sweep
+│   ├── Latency and throughput measurement
+│   ├── Memory traffic analysis
+│   └── Naive attention bottleneck diagnosis
+│
+├── 4. FlashAttention-Style Forward Kernel
+│   ├── Q-block program ownership
+│   ├── K/V tile streaming
+│   ├── Online softmax state update
+│   ├── Fused score / softmax / value accumulation
+│   └── Avoidance of full S and P materialization
+│
+├── 5. Paged KV-Cache Toy Attention
+│   ├── Block-based KV layout
+│   ├── Request-to-block mapping
+│   ├── Decode-style attention over cached K/V
+│   └── Serving-oriented memory layout exploration
+│
+├── 6. FlashAttention v2 / Split-K Experiment
+│   ├── Sequence-dimension parallelism
+│   ├── Partial output accumulation
+│   ├── Cross-program reduction idea
+│   └── Parallelism vs synchronization trade-off
+│
+└── 7. Analysis and Interview Review
+    ├── Naive attention IO cost
+    ├── Arithmetic intensity and Roofline reasoning
+    ├── Memory-bound vs compute-bound diagnosis
+    ├── FlashAttention-1 vs FlashAttention-2 design ideas
+    └── Benchmark caveats and future optimization directions
+```
 
 ## Chapter 1 Integration Scope
 
@@ -293,6 +342,10 @@ A kernel can be memory-latency-bound, under-occupied, uncoalesced, dependent on 
 ## FlashAttention IO-Aware Design
 
 FlashAttention computes exact scaled dot-product attention, but reorganizes execution to reduce data movement. Its key idea is to keep small tiles and row-wise running state on chip instead of materializing full `S` and `P` matrices in global memory.
+
+![FlashAttention IO-aware tiled execution overview](../assets/projects/triton-flashattention/flashattention-io-aware-overview.png)
+
+*End-to-end view of the forward pass: Q/K/V tiles move from HBM into on-chip SRAM, each query tile streams over K/V tiles while online softmax keeps only row-wise state `(m, l, O)`, and the completed output tile is written back once.*
 
 GPU memory is hierarchical: on-chip SRAM/shared-memory/cache capacity is small, but bandwidth is much higher and access is closer to compute. Off-chip GPU memory has much larger capacity but is expensive to move through repeatedly.
 
@@ -623,34 +676,6 @@ This implementation is production-grade or universally faster than PyTorch SDPA.
 ```
 
 That stronger claim would require stricter parity, broader shapes, multiple dtypes, non-multiple dimensions, non-causal mode, masks, robust statistics, and hardware-counter profiling.
-
-## Interview Review Summary
-
-The PDF's interview section can be distilled into a practical explanation flow:
-
-| Question | Interview-ready answer |
-|---|---|
-| What problem does the project solve? | It studies why standard attention becomes inefficient as sequence length grows and uses fusion plus tiled reuse to reduce global-memory traffic. |
-| What exactly is fused? | Score computation, scaling, causal/boundary masking, online softmax, and multiplication by `V` are fused in one Triton kernel. |
-| Why does one program own a `Q` block? | Each query row depends on all key/value tiles, and the same program must maintain the row's running max, denominator, and output accumulator. |
-| Why is online-softmax rescaling needed? | Later tiles may increase the running max, so old denominator/output terms must be rescaled to the new exponential reference. |
-| Why not compute softmax first and only fuse `PV`? | That would still require materializing or rereading the full score/probability matrix, preserving the dominant quadratic HBM traffic. |
-| How is causal masking handled? | Invalid `j > i` score positions are set to `-inf`, so their exponentials contribute zero. Boundary lanes are also masked. |
-| Why compare to naive Triton? | It isolates the effect of fusion and IO-aware tiling in the same programming stack. PyTorch SDPA is still important as a production baseline. |
-| What remains untested? | Non-causal mode, additive masks, non-multiple sequence lengths, more head dimensions, more dtypes, large/small score ranges, and degenerate rows. |
-| What would be optimized next? | Fix benchmark parity, autotune tiles/warps/stages, reduce accumulator footprint, skip fully masked causal tiles, profile spills, and add backward/dropout/layout support. |
-
-The 30-second version is:
-
-```text
-I implemented a naive attention baseline and a FlashAttention-style fused
-Triton kernel. The naive version materializes full N x N score and probability
-matrices. The fused version tiles Q/K/V, uses online softmax, applies causal
-masking in-kernel, and accumulates the output without storing those quadratic
-intermediates. The goal is to reduce global-memory traffic, not the leading
-O(N^2 D) arithmetic. On the recorded T4 runs, the fused kernel is 3.63x to
-7.71x faster than my naive Triton baseline, with benchmark-parity caveats.
-```
 
 ## Main Takeaways
 
