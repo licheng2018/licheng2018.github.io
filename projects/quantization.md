@@ -16,6 +16,14 @@ Built an LLM quantization benchmark pipeline to compare FP16 inference with INT8
 
 ## Project Scope
 
+![Quantized inference dataflow and trade-offs](../assets/projects/quantization/quantized-inference-dataflow-tradeoff.png)
+
+![Quantized inference GEMM dataflow](../assets/projects/quantization/quantized-inference-gemm-dataflow.png)
+
+![AWQ vs GPTQ quantization workflow and comparison](../assets/projects/quantization/awq-vs-gptq-quantization-workflow.png)
+
+![LLM quantization overview for FP16, INT8, INT4, weight-only, and activation quantization](../assets/projects/quantization/llm-quantization-overview.png)
+
 - Implemented a Hugging Face / Transformers benchmark for FP16 baseline inference and `bitsandbytes` INT8 quantized inference.
 - Measured time-to-first-token, total latency, time-per-output-token, throughput, peak allocated GPU memory, and peak reserved GPU memory.
 - Swept output lengths across 32, 64, and 128 `max_new_tokens` with multiple prompts.

@@ -6,7 +6,7 @@ Ph.D. Candidate in Electrical Engineering at École de technologie supérieure (
 
 I work at the intersection of **machine learning systems**, **AI infrastructure**, **performance engineering**, **GPU computing**, and **distributed optimization**. My recent projects span PyTorch compiler/runtime analysis, CUDA and Triton kernel optimization, LLM inference serving, distributed training, quantization, and communication-aware system benchmarking. I enjoy building practical systems, measuring them rigorously, and turning performance bottlenecks into clear engineering decisions across ML infrastructure, backend systems, and applied AI workloads.
 
-[Resume](resume.md) · [Publications](publications.md) · [GitHub](https://github.com/licheng2018) · [LinkedIn](https://www.linkedin.com/in/licheng-zheng-589807178/) · musicsir at outlook dot com
+[Resume](resume.md) · [Publications](publications.md) · [Python/C++ Cheatsheet](resources/python-cpp-common-functions.md) · [GitHub](https://github.com/licheng2018) · [LinkedIn](https://www.linkedin.com/in/licheng-zheng-589807178/) · musicsir at outlook dot com
 
 ## At a Glance
 

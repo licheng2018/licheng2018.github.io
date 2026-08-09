@@ -18,6 +18,14 @@ Source repo: [github](https://github.com/licheng2018/serving-benchmark/tree/main
 
 ## Project Goal
 
+![LLM inference serving end-to-end benchmark pipeline](../assets/projects/llm-serving/llm-inference-serving-e2e-benchmark-pipeline.png)
+
+![LLM inference prefill versus decode](../assets/projects/llm-serving/llm-inference-prefill-vs-decode.png)
+
+![LLM inference KV cache, concurrency, and OOM risk](../assets/projects/llm-serving/llm-inference-kv-cache-concurrency-oom-risk.png)
+
+![Serving load trade-off for batch, concurrency, TTFT, TPOT, and throughput](../assets/projects/llm-serving/serving-load-batch-concurrency-latency-throughput-tradeoff.png)
+
 The project focuses on practical serving metrics rather than model accuracy. It studies what happens after a user sends a prompt to an inference service:
 
 - How long the user waits before the first token appears.

@@ -16,6 +16,16 @@ Built a hands-on distributed systems benchmarking project to study how NCCL coll
 
 ## Project Scope
 
+![NCCL collective communication overview for AllReduce, AllGather, ReduceScatter, and Broadcast](../assets/projects/nccl-parallelism/nccl-collective-communication-overview.png)
+
+![Gradient bucketing and communication-computation overlap](../assets/projects/nccl-parallelism/gradient-bucketing-communication-computation-overlap.png)
+
+![NCCL Ring AllReduce as ReduceScatter plus AllGather](../assets/projects/nccl-parallelism/nccl-ring-allreduce-reducescatter-allgather.png)
+
+![Tensor parallelism column-parallel versus row-parallel communication](../assets/projects/nccl-parallelism/tensor-parallel-column-row-communication.png)
+
+![Pipeline parallelism microbatches, bubble, and stage utilization](../assets/projects/nccl-parallelism/pipeline-parallelism-microbatches-bubble-stage-utilization.png)
+
 - Benchmarked NCCL `AllReduce`, `ReduceScatter`, and `AllGather` on a 2-GPU Tesla T4 setup using `nccl-tests`.
 - Measured latency and bus bandwidth across message sizes from bytes-scale transfers to hundreds of MB.
 - Compared full-gradient synchronization with sharded communication patterns used by ZeRO/FSDP-style training.

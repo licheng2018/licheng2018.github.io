@@ -73,6 +73,16 @@ The distinction matters because the expected output is not a final language-mode
 
 ## Code Architecture and Training Flow
 
+![Distributed GPT training end-to-end system overview](../assets/projects/distributed-training/distributed-gpt-training-system-overview.png)
+
+![DDP vs FSDP memory and communication dataflow](../assets/projects/distributed-training/ddp-vs-fsdp-memory-communication-dataflow.png)
+
+![Gradient accumulation from microbatch to global batch](../assets/projects/distributed-training/gradient-accumulation-microbatch-global-batch.png)
+
+![Distributed GPT training summary with DDP, FSDP, gradient accumulation, bucketing, autowrap, and activation checkpointing](../assets/projects/distributed-training/distributed-training-comprehensive-summary.png)
+
+![DDP vs FSDP benchmark and performance trade-off](../assets/projects/distributed-training/ddp-vs-fsdp-benchmark-performance-tradeoff.png)
+
 The codebase can be understood as a layered training benchmark rather than a single monolithic script. Each layer isolates one part of the distributed training system:
 
 ![GPT-Neo distributed training architecture](../assets/projects/distributed-training/gpt-training-architecture.svg)

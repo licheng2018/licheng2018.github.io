@@ -3238,6 +3238,10 @@ cuBLAS-competitive GEMM implementation.
 
 ## Softmax
 
+![CUDA stable Softmax and reduction dataflow](../assets/projects/cuda-kernels/softmax-stable-reduction-dataflow.png)
+
+![CUDA Softmax row mapping strategy comparison across warp-per-row, block-per-row, and multi-warp-per-row](../assets/projects/cuda-kernels/softmax-row-mapping-strategy-comparison.png)
+
 This experiment implements and compares three CUDA row-wise Softmax mapping strategies:
 
 - **Warp-per-row:** one warp handles one row.
@@ -3605,6 +3609,10 @@ more shared-memory/register usage
 This optimization is most valuable when `D` is small enough that intermediate values can fit in registers or shared memory.
 
 ## LayerNorm
+
+![CUDA LayerNorm forward reduction and normalize dataflow](../assets/projects/cuda-kernels/layernorm-forward-reduction-normalize-dataflow.png)
+
+![CUDA LayerNorm backward gradient propagation and reduction paths](../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png)
 
 This LayerNorm notebook contains two major backward experiments:
 
