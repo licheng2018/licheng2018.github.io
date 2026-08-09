@@ -8,7 +8,7 @@ Source repo: [cuda_projects](https://github.com/licheng2018/cuda_projects/tree/m
 
 | Area | Jump to sections |
 |---|---|
-| Overview | [Project Overview](#project-overview) · [Project Scope](#project-scope) · [Operator Development Goals](#operator-development-goals) · [Repository Structure](#repository-structure) |
+| Overview | [Project Overview](#project-overview) · [Visual Interview Map](#visual-interview-map) · [Project Scope](#project-scope) · [Operator Development Goals](#operator-development-goals) · [Repository Structure](#repository-structure) |
 | CUDA fundamentals | [Vector Addition](#vector-addition-cuda-programming-foundation) · [Memory Coalescing](#cuda-memory-coalescing-strided-access-benchmark) · [Shared Memory and Bank Conflict](#cuda-shared-memory-and-bank-conflict) · [Warp-Level Reduction](#cuda-warp-level-reduction) · [Loop Unrolling and Register Optimization](#loop-unrolling-and-register-optimization) |
 | ML operators | [Matrix Multiplication](#matrix-multiplication) · [GEMM Optimization Case Study](#gemm-optimization-case-study) · [Softmax](#softmax) · [LayerNorm](#layernorm) · [PyTorch Extensions](#pytorch-ccuda-extensions) · [Naive Attention](#naive-attention-and-io-bound-analysis) |
 | Analysis | [Profiling Focus](#profiling-focus) · [Main Takeaways](#main-takeaways) · [Experiment Result Analysis](#experiment-result-analysis) |
@@ -26,6 +26,70 @@ Instead of focusing only on writing functionally correct kernels, this project e
 - **Integration:** exposing CUDA kernels as reusable PyTorch C++/CUDA extensions.
 
 The project was designed as an end-to-end learning and engineering exercise for GPU kernel development, machine learning systems, and accelerator-oriented software optimization.
+
+### Visual Interview Map
+
+These diagrams summarize the main CUDA concepts and ML operator case studies in one place, so the project can be explained quickly before drilling into implementation details.
+
+**CUDA execution model and grid-stride loops**
+
+![CUDA vector addition thread mapping and grid-stride loop](../assets/projects/cuda-kernels/vector-add-thread-mapping-grid-stride.png)
+
+**Global memory coalescing**
+
+![CUDA memory coalescing warp access pattern and memory transactions](../assets/projects/cuda-kernels/memory-coalescing-warp-access-pattern.png)
+
+**Shared memory and bank conflicts**
+
+![CUDA shared memory bank conflicts, strided access, and padding](../assets/projects/cuda-kernels/shared-memory-bank-conflict-overview.png)
+
+**Warp-level reduction**
+
+![CUDA warp-level reduction with shuffle and block reduction](../assets/projects/cuda-kernels/warp-level-reduction-overview.png)
+
+**Loop unrolling and register optimization**
+
+![CUDA loop unrolling and register optimization mechanism, trade-off, and measured results](../assets/projects/cuda-kernels/loop-unrolling-register-optimization.png)
+
+**Matrix multiplication optimization path**
+
+![CUDA matrix multiplication optimization overall pipeline](../assets/projects/cuda-kernels/matmul-optimization-overall-pipeline.png)
+
+**GEMM tile-size trade-off**
+
+![CUDA MatMul tile size trade-off between 16x16 and 32x32](../assets/projects/cuda-kernels/matmul-tile16-vs-tile32-tradeoff.png)
+
+**Tiled MatMul dataflow**
+
+![CUDA shared-memory tiled MatMul dataflow](../assets/projects/cuda-kernels/matmul-tiled-dataflow.png)
+
+**Naive vs tiled MatMul memory traffic**
+
+![CUDA MatMul naive versus tiled memory traffic and data reuse](../assets/projects/cuda-kernels/matmul-naive-vs-tiled-memory-traffic.png)
+
+**Nsight Compute profiling workflow**
+
+![CUDA Nsight Compute profiling workflow from runtime symptom to root cause](../assets/projects/cuda-kernels/nsight-compute-profiling-workflow.png)
+
+**Nsight root-cause analysis for GEMM**
+
+![CUDA MatMul Nsight root-cause analysis for Tile16, Tile32, and Tile32 with padding](../assets/projects/cuda-kernels/nsight-matmul-root-cause-analysis.png)
+
+**Stable Softmax dataflow**
+
+![CUDA stable Softmax and reduction dataflow](../assets/projects/cuda-kernels/softmax-stable-reduction-dataflow.png)
+
+**Softmax mapping strategies**
+
+![CUDA Softmax row mapping strategy comparison across warp-per-row, block-per-row, and multi-warp-per-row](../assets/projects/cuda-kernels/softmax-row-mapping-strategy-comparison.png)
+
+**LayerNorm forward**
+
+![CUDA LayerNorm forward reduction and normalize dataflow](../assets/projects/cuda-kernels/layernorm-forward-reduction-normalize-dataflow.png)
+
+**LayerNorm backward**
+
+![CUDA LayerNorm backward gradient propagation and reduction paths](../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png)
 
 ## Project Scope
 

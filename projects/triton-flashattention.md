@@ -8,7 +8,7 @@ Source repo: [github](https://github.com/licheng2018/triton)
 
 | Area | Jump to sections |
 |---|---|
-| Overview | [Project Goal](#project-goal) · [Repository Structure](#repository-structure) · [Project Component Map](#project-component-map) · [Chapter 1 Integration Scope](#chapter-1-integration-scope) |
+| Overview | [Project Goal](#project-goal) · [Visual Interview Map](#visual-interview-map) · [Repository Structure](#repository-structure) · [Project Component Map](#project-component-map) · [Chapter 1 Integration Scope](#chapter-1-integration-scope) |
 | Attention Theory | [Naive Attention and IO Cost](#naive-attention-and-io-cost) · [Arithmetic Intensity and T4 Roofline Example](#arithmetic-intensity-and-t4-roofline-example) · [Diagnosing Memory-Bound Behavior](#diagnosing-memory-bound-behavior) |
 | FlashAttention | [FlashAttention IO-Aware Design](#flashattention-io-aware-design) · [Triton Program Ownership and Tile Loop](#triton-program-ownership-and-tile-loop) · [Online Softmax](#online-softmax) · [Why Backward Recomputation Is Necessary](#why-backward-recomputation-is-necessary) · [FlashAttention-2 Design Ideas](#flashattention-2-design-ideas) · [Visual Explanations](#visual-explanations) |
 | Implementation Results | [Triton Warm-Up: Vector Add](#triton-warm-up-vector-add) · [Triton Row-Wise Kernel Tuning](#triton-row-wise-kernel-tuning) · [Naive Triton Attention Baseline](#naive-triton-attention-baseline) · [Naive Attention Profiling Sweep](#naive-attention-profiling-sweep) · [Paged KV-Cache Toy Attention](#paged-kv-cache-toy-attention) · [Mini FlashAttention-style Kernel](#mini-flashattention-style-kernel) · [FlashAttention v2 / Split-K Experiment](#flashattention-v2-split-k-experiment) |
@@ -32,6 +32,60 @@ The work therefore focuses on:
 - Reducing global-memory traffic through tiling and fusion.
 - Maintaining exact numerically stable attention through online softmax.
 - Auditing benchmark methodology, correctness parity, and profiler interpretation.
+
+### Visual Interview Map
+
+These diagrams summarize the attention optimization story in one place: naive attention materializes large `N x N` intermediates, while FlashAttention-style kernels tile Q/K/V, keep online-softmax state on chip, and reduce global-memory traffic.
+
+**Naive attention dataflow**
+
+![Naive attention dataflow](../assets/projects/triton-flashattention/naive-attention-dataflow.png)
+
+**FlashAttention IO-aware tiled execution**
+
+![FlashAttention IO-aware tiled execution overview](../assets/projects/triton-flashattention/flashattention-io-aware-overview.png)
+
+**GPU memory hierarchy**
+
+![Memory hierarchy](../assets/projects/triton-flashattention/memory-hierarchy.png)
+
+**Standard attention vs FlashAttention**
+
+![Standard attention vs FlashAttention](../assets/projects/triton-flashattention/flash-vs-standard.png)
+
+**FlashAttention key takeaway**
+
+![FlashAttention key takeaway](../assets/projects/triton-flashattention/flash-key-takeaway.png)
+
+**FlashAttention tiling**
+
+![FlashAttention tiling](../assets/projects/triton-flashattention/flash-tiling.png)
+
+**Fused FlashAttention flow**
+
+![FlashAttention fused flow](../assets/projects/triton-flashattention/flash-fused-flow.png)
+
+**Online softmax**
+
+![Online softmax](../assets/projects/triton-flashattention/online-softmax.png)
+
+**Online softmax update timeline**
+
+![Online softmax update timeline](../assets/projects/triton-flashattention/online-softmax-timeline.png)
+
+**FlashAttention-2 parallelization**
+
+![FlashAttention v2 parallelization](../assets/projects/triton-flashattention/flash-v2-parallelization.png)
+
+**FlashAttention-2 worker assignment**
+
+![FlashAttention v2 worker assignment](../assets/projects/triton-flashattention/flash-v2-forward-workers.png)
+
+**Softmax and warp-level reduction**
+
+![Warp shuffle reduction](../assets/projects/triton-flashattention/softmax-warp-shuffle.png)
+
+![Softmax definition](../assets/projects/triton-flashattention/softmax-definition.png)
 
 ## Repository Structure
 
