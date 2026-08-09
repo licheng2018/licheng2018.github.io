@@ -45,6 +45,10 @@ These diagrams summarize the attention optimization story in one place: naive at
 
 ![FlashAttention IO-aware tiled execution overview](../assets/projects/triton-flashattention/flashattention-io-aware-overview.png)
 
+![FlashAttention performance comparison](../assets/projects/triton-flashattention/flash-attention-performance-comparison.png)
+
+![Online softmax across tiles exactness](../assets/projects/triton-flashattention/online-softmax-across-tiles-exactness.png)
+
 **GPU memory hierarchy**
 
 ![Memory hierarchy](../assets/projects/triton-flashattention/memory-hierarchy.png)
@@ -401,6 +405,10 @@ FlashAttention computes exact scaled dot-product attention, but reorganizes exec
 
 *End-to-end view of the forward pass: Q/K/V tiles move from HBM into on-chip SRAM, each query tile streams over K/V tiles while online softmax keeps only row-wise state `(m, l, O)`, and the completed output tile is written back once.*
 
+![FlashAttention performance comparison](../assets/projects/triton-flashattention/flash-attention-performance-comparison.png)
+
+![Online softmax across tiles exactness](../assets/projects/triton-flashattention/online-softmax-across-tiles-exactness.png)
+
 GPU memory is hierarchical: on-chip SRAM/shared-memory/cache capacity is small, but bandwidth is much higher and access is closer to compute. Off-chip GPU memory has much larger capacity but is expensive to move through repeatedly.
 
 ![Memory hierarchy](../assets/projects/triton-flashattention/memory-hierarchy.png)
@@ -679,7 +687,6 @@ Benchmark:
 |---:|---:|---:|---:|
 | 256 | 1.0282 | 0.2426 | 4.24x |
 | 512 | 1.7125 | 0.4714 | 3.63x |
-| 1024 | 3.7537 | 0.5541 | 6.77x |
 | 1024 | 3.5619 | 0.4618 | 7.71x |
 
 The speedup comes from avoiding full materialization of the attention score/probability matrices and reusing data inside SRAM/register-level state.

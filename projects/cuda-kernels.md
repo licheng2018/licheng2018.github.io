@@ -43,6 +43,8 @@ These diagrams summarize the main CUDA concepts and ML operator case studies in 
 
 ![CUDA shared memory bank conflicts, strided access, and padding](../assets/projects/cuda-kernels/shared-memory-bank-conflict-overview.png)
 
+![CUDA shared memory bank conflicts clean benchmark and padding explanation](../assets/projects/cuda-kernels/shared-memory-bank-conflict-clean-benchmark.png)
+
 **Warp-level reduction**
 
 ![CUDA warp-level reduction with shuffle and block reduction](../assets/projects/cuda-kernels/warp-level-reduction-overview.png)
@@ -90,6 +92,8 @@ These diagrams summarize the main CUDA concepts and ML operator case studies in 
 **LayerNorm backward**
 
 ![CUDA LayerNorm backward gradient propagation and reduction paths](../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png)
+
+![CUDA LayerNorm backward AtomicAdd versus two-pass reduction](../assets/projects/cuda-kernels/layernorm-backward-atomic-vs-two-pass-reduction.png)
 
 ## Project Scope
 
@@ -1008,6 +1012,8 @@ Also, Nsight Systems is most useful for timeline-level analysis such as kernel d
 ## CUDA Shared Memory and Bank Conflict
 
 ![CUDA shared memory bank conflicts, strided access, and padding](../assets/projects/cuda-kernels/shared-memory-bank-conflict-overview.png)
+
+![CUDA shared memory bank conflicts clean benchmark and padding explanation](../assets/projects/cuda-kernels/shared-memory-bank-conflict-clean-benchmark.png)
 
 This notebook is the next step after the Vector Addition and Memory Coalescing notebooks:
 
@@ -3677,6 +3683,8 @@ This optimization is most valuable when `D` is small enough that intermediate va
 ![CUDA LayerNorm forward reduction and normalize dataflow](../assets/projects/cuda-kernels/layernorm-forward-reduction-normalize-dataflow.png)
 
 ![CUDA LayerNorm backward gradient propagation and reduction paths](../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png)
+
+![CUDA LayerNorm backward AtomicAdd versus two-pass reduction](../assets/projects/cuda-kernels/layernorm-backward-atomic-vs-two-pass-reduction.png)
 
 This LayerNorm notebook contains two major backward experiments:
 
