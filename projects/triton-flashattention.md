@@ -653,6 +653,29 @@ The repo includes a Day 3 benchmark comparing PyTorch and naive Triton attention
 
 The naive Triton version scales in absolute throughput as `N` grows, but it remains far behind PyTorch's optimized kernel.
 
+The detailed sweep below compares the naive attention baseline in PyTorch and Triton. This table is not the FlashAttention result; it isolates the cost of the naive Triton implementation against the optimized PyTorch attention path across sequence lengths and block configurations.
+
+| impl | N | D | cfg | ms | GFLOP/s | est_GB/s | speedup_vs_torch |
+|---|---:|---:|---|---:|---:|---:|---:|
+| torch | 256 | 64 | - | 0.0944 | 177.81 | 6.95 | 1.00x |
+| naive_triton | 256 | 64 | `BM=64,BN=64,BK=32,SB=256,w=4` | 1.0278 | 16.32 | 0.64 | 0.09x |
+| torch | 256 | 64 | - | 0.0904 | 185.62 | 7.25 | 1.00x |
+| naive_triton | 256 | 64 | `BM=128,BN=64,BK=32,SB=256,w=4` | 1.0256 | 16.36 | 0.64 | 0.09x |
+| torch | 256 | 64 | - | 0.0884 | 189.74 | 7.41 | 1.00x |
+| naive_triton | 256 | 64 | `BM=64,BN=128,BK=32,SB=512,w=8` | 1.0265 | 16.34 | 0.64 | 0.09x |
+| torch | 512 | 64 | - | 0.1027 | 653.30 | 22.97 | 1.00x |
+| naive_triton | 512 | 64 | `BM=64,BN=64,BK=32,SB=256,w=4` | 1.5901 | 42.20 | 1.48 | 0.07x |
+| torch | 512 | 64 | - | 0.1031 | 650.90 | 22.88 | 1.00x |
+| naive_triton | 512 | 64 | `BM=128,BN=64,BK=32,SB=256,w=4` | 1.5892 | 42.23 | 1.48 | 0.07x |
+| torch | 512 | 64 | - | 0.1036 | 647.97 | 22.78 | 1.00x |
+| naive_triton | 512 | 64 | `BM=64,BN=128,BK=32,SB=512,w=8` | 1.5887 | 42.24 | 1.49 | 0.07x |
+| torch | 1024 | 64 | - | 0.2434 | 1102.96 | 36.62 | 1.00x |
+| naive_triton | 1024 | 64 | `BM=64,BN=64,BK=32,SB=256,w=4` | 3.7526 | 71.53 | 2.38 | 0.04x |
+| torch | 1024 | 64 | - | 0.1334 | 2012.36 | 66.82 | 1.00x |
+| naive_triton | 1024 | 64 | `BM=128,BN=64,BK=32,SB=256,w=4` | 3.5791 | 75.00 | 2.49 | 0.04x |
+| torch | 1024 | 64 | - | 0.1335 | 2010.31 | 66.75 | 1.00x |
+| naive_triton | 1024 | 64 | `BM=64,BN=128,BK=32,SB=512,w=8` | 3.5751 | 75.08 | 2.49 | 0.04x |
+
 ## Paged KV-Cache Toy Attention
 
 The notebook also includes a toy paged-KV attention example.
