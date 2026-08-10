@@ -95,6 +95,8 @@ These diagrams summarize the main CUDA concepts and ML operator case studies in 
 
 ![CUDA LayerNorm backward AtomicAdd versus two-pass reduction](../assets/projects/cuda-kernels/layernorm-backward-atomic-vs-two-pass-reduction.png)
 
+![LayerNorm two-pass backward error root cause](../assets/projects/cuda-kernels/layernorm-two-pass-backward-error-root-cause.png)
+
 ## Project Scope
 
 The project spans both low-level GPU programming and higher-level machine learning operator engineering:
@@ -3685,6 +3687,8 @@ This optimization is most valuable when `D` is small enough that intermediate va
 ![CUDA LayerNorm backward gradient propagation and reduction paths](../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png)
 
 ![CUDA LayerNorm backward AtomicAdd versus two-pass reduction](../assets/projects/cuda-kernels/layernorm-backward-atomic-vs-two-pass-reduction.png)
+
+![LayerNorm two-pass backward error root cause](../assets/projects/cuda-kernels/layernorm-two-pass-backward-error-root-cause.png)
 
 This LayerNorm notebook contains two major backward experiments:
 
