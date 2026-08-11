@@ -22,6 +22,14 @@ Built a hands-on distributed systems benchmarking project to study how NCCL coll
 
 ![NCCL Ring AllReduce as ReduceScatter plus AllGather](../assets/projects/nccl-parallelism/nccl-ring-allreduce-reducescatter-allgather.png)
 
+![NCCL AllReduce performance versus message size on 2x NVIDIA T4](../assets/projects/nccl-parallelism/nccl-allreduce-performance-vs-message-size.png)
+
+![NCCL AllGather performance versus message size on 2x NVIDIA T4](../assets/projects/nccl-parallelism/nccl-allgather-performance-vs-message-size.png)
+
+![NCCL ReduceScatter performance versus message size on 2x NVIDIA T4](../assets/projects/nccl-parallelism/nccl-reducescatter-performance-vs-message-size.png)
+
+![NCCL collective performance comparison: AllReduce versus ReduceScatter plus AllGather](../assets/projects/nccl-parallelism/nccl-collective-performance-allreduce-vs-rs-ag.png)
+
 ![Tensor parallelism column-parallel versus row-parallel communication](../assets/projects/nccl-parallelism/tensor-parallel-column-row-communication.png)
 
 ![Pipeline parallelism microbatches, bubble, and stage utilization](../assets/projects/nccl-parallelism/pipeline-parallelism-microbatches-bubble-stage-utilization.png)
