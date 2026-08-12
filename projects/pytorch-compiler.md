@@ -4,6 +4,16 @@ This project studies how modern ML compiler stacks turn PyTorch programs into op
 
 The project also includes a compiler explainer that walks from eager-mode execution to graph capture, TorchDynamo, FX graphs, graph breaks, guards, caching, TorchInductor, and Triton/CUDA code generation.
 
+![PyTorch compiler stack from PyTorch to Triton](../assets/projects/pytorch-compiler/pytorch-compiler-stack-from-pytorch-to-triton.png)
+
+![Mini PyTorch-to-Triton compiler benchmarks](../assets/projects/pytorch-compiler/mini-pytorch-to-triton-compiler-benchmarks.png)
+
+![Mini PyTorch-to-Triton compiler pipeline](../assets/projects/pytorch-compiler/mini-pytorch-to-triton-compiler-pipeline.png)
+
+![Graph capture versus graph break in TorchDynamo](../assets/projects/pytorch-compiler/graph-capture-vs-graph-break.png)
+
+![torch.compile workload-dependent compiler benchmarks](../assets/projects/pytorch-compiler/torch-compile-workload-dependent-benchmarks.png)
+
 [Download the original project explainer PDF](../assets/projects/compiler.pdf)
 
 ## Project Goal
