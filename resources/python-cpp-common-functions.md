@@ -6,7 +6,7 @@ Quick reference for common data structures and utility functions used in coding 
 
 | Language | Topics |
 |---|---|
-| Python | [Queue](#queue) · [Set](#set) · [Stack](#stack) · [Hash Map / Dictionary](#hash-map--dictionary) · [Heap](#heap) · [String and Sorting](#string-and-sorting) · [Common Constants and 2D Arrays](#common-constants-and-2d-arrays) |
+| Python | [Queue](#queue) · [Set](#set) · [Stack](#stack) · [Hash Map / Dictionary](#hash-map--dictionary) · [Heap](#heap) · [String and Sorting](#string-and-sorting) · [String Utilities](#string-utilities) · [Common Constants and 2D Arrays](#common-constants-and-2d-arrays) |
 | C++ | [Vector / 2D List](#vector--2d-list) · [Sort](#sort) · [Heap / Priority Queue](#heap--priority-queue) · [Set](#set-1) · [String Utilities](#string-utilities) · [Queue / Deque](#queue--deque) · [Stack](#stack-1) · [Pair](#pair) · [Common Constants and Conversions](#common-constants-and-conversions) |
 
 ## Python
@@ -69,6 +69,30 @@ s = "abc"
 joined = " ".join(words)
 hashable_key = tuple(s)
 sorted_num = sorted(nums)
+```
+
+### String Utilities
+
+```python
+s = "abc"
+c = "A"
+
+ok1 = c.isalnum()
+ok2 = c.isalpha()
+ok3 = c.isdigit()
+lower = c.lower()
+upper = c.upper()
+
+lower_s = s.lower()
+upper_s = s.upper()
+
+reversed_s = s[::-1]
+s = s + "xyz"
+
+# If you need mutable append-style updates:
+chars = list(s)
+chars.append("z")
+s = "".join(chars)
 ```
 
 ### Common Constants and 2D Arrays
@@ -148,9 +172,13 @@ bool ok1 = isalnum(c);
 bool ok2 = isalpha(c);
 bool ok3 = isdigit(c);
 char lower = tolower(c);
+char upper = toupper(c);
 
 reverse(s.begin(), s.end());
 s.append("xyz");
+
+transform(s.begin(), s.end(), s.begin(), ::tolower);
+transform(s.begin(), s.end(), s.begin(), ::toupper);
 ```
 
 ### Queue / Deque
