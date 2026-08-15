@@ -115,6 +115,7 @@ using namespace std;
 
 vector<vector<string>> strlist;
 strlist.push_back(row);
+strlist.pop_back();
 
 vector<vector<int>> visited(m, vector<int>(n, 0));
 ```
