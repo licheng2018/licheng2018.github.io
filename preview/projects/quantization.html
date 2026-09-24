@@ -1,0 +1,659 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LLM Quantization Benchmark and Inference Optimization</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>LLM Quantization Benchmark and Inference Optimization</h1>
+<p>Built an LLM quantization benchmark pipeline to compare FP16 inference with INT8 weight quantization under consistent prompt, output-length, runtime, and GPU settings, then analyzed when quantization helps deployment and when it slows inference down.</p>
+<ul>
+<li>Source code: <a href="https://github.com/licheng2018/Quantization-Deployment-Basics">github</a></li>
+<li>Result data: <a href="../assets/projects/quantization/benchmark-results.csv">benchmark-results.csv</a></li>
+</ul>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Jump to sections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Overview</td>
+<td><a href="#project-scope">Project Scope</a> · <a href="#project-positioning">Project Positioning</a> · <a href="#benchmark-design">Benchmark Design</a></td>
+</tr>
+<tr>
+<td>Quantization Fundamentals</td>
+<td><a href="#decode-bottleneck-motivation">Decode Bottleneck Motivation</a> · <a href="#quantization-background">Quantization Background</a> · <a href="#numeric-formats-from-the-slides">Numeric Formats From The Slides</a> · <a href="#weight-only-int4int8-quantization">Weight-Only INT4/INT8 Quantization</a> · <a href="#mixed-precision-and-salient-weights">Mixed Precision and Salient Weights</a> · <a href="#awq-vs-gptq">AWQ vs GPTQ</a></td>
+</tr>
+<tr>
+<td>Results</td>
+<td><a href="#benchmark-setup">Benchmark Setup</a> · <a href="#overall-result">Overall Result</a> · <a href="#output-length-sweep">Output-Length Sweep</a> · <a href="#latency-and-memory-figures">Latency And Memory Figures</a></td>
+</tr>
+<tr>
+<td>Review</td>
+<td><a href="#why-int8-was-slower-in-this-benchmark">Why INT8 Was Slower In This Benchmark</a> · <a href="#what-the-benchmark-shows">What The Benchmark Shows</a> · <a href="#connection-to-serving-benchmark">Connection To Serving Benchmark</a> · <a href="#result-analysis">Result Analysis</a> · <a href="#interview-summary">Interview Summary</a></td>
+</tr>
+</tbody></table>
+<h2>Project Scope</h2>
+<p><img src="../assets/projects/quantization/quantized-inference-dataflow-tradeoff.png" alt="Quantized inference dataflow and trade-offs"></p>
+<p><img src="../assets/projects/quantization/quantized-inference-gemm-dataflow.png" alt="Quantized inference GEMM dataflow"></p>
+<p><img src="../assets/projects/quantization/awq-vs-gptq-quantization-workflow.png" alt="AWQ vs GPTQ quantization workflow and comparison"></p>
+<p><img src="../assets/projects/quantization/llm-quantization-overview.png" alt="LLM quantization overview for FP16, INT8, INT4, weight-only, and activation quantization"></p>
+<ul>
+<li>Implemented a Hugging Face / Transformers benchmark for FP16 baseline inference and <code>bitsandbytes</code> INT8 quantized inference.</li>
+<li>Measured time-to-first-token, total latency, time-per-output-token, throughput, peak allocated GPU memory, and peak reserved GPU memory.</li>
+<li>Swept output lengths across 32, 64, and 128 <code>max_new_tokens</code> with multiple prompts.</li>
+<li>Logged generated text for manual output-quality review instead of treating latency alone as the deployment objective.</li>
+<li>Connected benchmark results with quantization concepts from FP32, FP16, BF16, FP8, INT8, INT4, AWQ, and GPTQ.</li>
+</ul>
+<h2>Project Positioning</h2>
+<p>The core of this project is a controlled inference comparison:</p>
+<pre><code class="language-text">same LLM
+same GPU
+same prompts
+same output lengths
+same benchmark loop
+        ↓
+FP16 baseline vs INT8 quantized inference
+</code></pre>
+<p>The main question is:</p>
+<pre><code class="language-text">Does quantization automatically make inference faster?
+</code></pre>
+<p>The experiment is intentionally designed to avoid unfair comparisons such as testing FP16 with one prompt length and INT8 with another. The FP16 model is the reference baseline, and every INT8 measurement is compared against the same workload.</p>
+<p>The project measures deployment behavior, not only model compression:</p>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TTFT</td>
+<td>Whether quantization affects first-token responsiveness.</td>
+</tr>
+<tr>
+<td>TPOT</td>
+<td>Whether decode-stage generation becomes faster or slower.</td>
+</tr>
+<tr>
+<td>Total latency</td>
+<td>Whether the full response improves.</td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>Whether output-token rate improves.</td>
+</tr>
+<tr>
+<td>Peak GPU memory</td>
+<td>Whether quantization reduces live GPU allocation.</td>
+</tr>
+<tr>
+<td>Generated text</td>
+<td>Whether output quality needs manual review.</td>
+</tr>
+</tbody></table>
+<h2>Benchmark Design</h2>
+<p>The most complete experiment is implemented in <code>quant_benchmark_skeleton.ipynb</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Setting</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Model</td>
+<td><code>Qwen/Qwen2.5-0.5B-Instruct</code></td>
+</tr>
+<tr>
+<td>GPU</td>
+<td>Tesla T4</td>
+</tr>
+<tr>
+<td>Baseline</td>
+<td>FP16</td>
+</tr>
+<tr>
+<td>Quantized mode</td>
+<td>INT8 with <code>bitsandbytes</code></td>
+</tr>
+<tr>
+<td>Output lengths</td>
+<td>32, 64, 128 <code>max_new_tokens</code></td>
+</tr>
+<tr>
+<td>Warmup</td>
+<td>1 run</td>
+</tr>
+<tr>
+<td>Measured runs</td>
+<td>3 runs per configuration</td>
+</tr>
+<tr>
+<td>Prompt set</td>
+<td>4 prompts</td>
+</tr>
+</tbody></table>
+<p>The FP16 baseline is loaded with:</p>
+<pre><code class="language-python">AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    device_map=&quot;auto&quot;
+)
+</code></pre>
+<p>The INT8 model is loaded through <code>bitsandbytes</code>:</p>
+<pre><code class="language-python">bnb_config = BitsAndBytesConfig(
+    load_in_8bit=True
+)
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    quantization_config=bnb_config,
+    device_map=&quot;auto&quot;
+)
+</code></pre>
+<p>The benchmark uses fixed prompts, including prompts such as:</p>
+<pre><code class="language-text">Explain what quantization means for LLM inference in simple terms.
+Why can quantization reduce GPU memory usage?
+</code></pre>
+<p>For each precision mode:</p>
+<pre><code class="language-text">4 prompts
+× 3 output lengths
+× 3 measured runs
+</code></pre>
+<p>The repeated runs are averaged for the summary tables.</p>
+<p>The benchmark records:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TTFT</td>
+<td><code>first_token_time - start_time</code></td>
+</tr>
+<tr>
+<td>Total latency</td>
+<td>Time from request start to completed generation.</td>
+</tr>
+<tr>
+<td>TPOT</td>
+<td><code>(total_latency_sec - ttft_sec) / (generated_tokens - 1)</code></td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>Generated tokens per second.</td>
+</tr>
+<tr>
+<td>Peak allocated memory</td>
+<td><code>torch.cuda.max_memory_allocated()</code> after resetting peak stats.</td>
+</tr>
+<tr>
+<td>Output quality note</td>
+<td>Generated text is saved for manual qualitative review.</td>
+</tr>
+</tbody></table>
+<p>The quality evaluation is intentionally conservative. The current project saves generated text with a note such as <code>manual review needed</code>; it does not claim a full perplexity, MMLU, or task-accuracy evaluation.</p>
+<h2>Decode Bottleneck Motivation</h2>
+<p>The quantization slides start from the decode problem: inference is not only a question of storing model weights. Decode repeatedly executes small steps, reads cached state, launches kernels, and streams one token at a time.</p>
+<p><img src="../assets/projects/quantization/slides/decode-problem.png" alt="Decode problem"></p>
+<p>Quantization can reduce model weight memory and memory bandwidth pressure, but decode latency also depends on kernel dispatch, dequantization, KV-cache reads, batch/concurrency, and framework overhead.</p>
+<h2>Quantization Background</h2>
+<p><img src="../assets/projects/quantization/quantization-formats.png" alt="Quantization formats"></p>
+<p>Quantization reduces the precision used to store model values. Lower precision can reduce memory footprint and memory bandwidth pressure, but inference speed depends on kernel support, dequantization cost, hardware support, and whether the workload is memory-bound or compute/overhead-bound.</p>
+<p><img src="../assets/projects/quantization/int4-int8-tradeoffs.png" alt="INT4 and INT8 tradeoffs"></p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Storage intuition</th>
+<th>Typical LLM use</th>
+<th>Main tradeoff</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FP32</td>
+<td>4 bytes/value</td>
+<td>Reference precision, training/debugging</td>
+<td>Highest memory cost</td>
+</tr>
+<tr>
+<td>FP16 / BF16</td>
+<td>2 bytes/value</td>
+<td>Common inference/training precision</td>
+<td>Good GPU support, lower memory than FP32</td>
+</tr>
+<tr>
+<td>FP8</td>
+<td>1 byte/value</td>
+<td>Newer low-precision training/inference paths</td>
+<td>Requires strong hardware/kernel support</td>
+</tr>
+<tr>
+<td>INT8</td>
+<td>1 byte/value plus scales</td>
+<td>Weight-only or mixed inference quantization</td>
+<td>Can reduce model memory, but may add dequantization overhead</td>
+</tr>
+<tr>
+<td>INT4</td>
+<td>0.5 byte/value plus scales</td>
+<td>Aggressive LLM compression</td>
+<td>Strong memory savings, higher quality/kernel sensitivity</td>
+</tr>
+</tbody></table>
+<h2>Numeric Formats From The Slides</h2>
+<p>The PDF summarizes the numerical formats used in LLM deployment:</p>
+<p><img src="../assets/projects/quantization/slides/numeric-formats-table.png" alt="Numeric formats table"></p>
+<p>FP32 uses 4 bytes per value and provides high precision and range. FP16 uses 2 bytes and is widely supported on GPUs, but its smaller exponent range can cause overflow or underflow. BF16 also uses 2 bytes but keeps an FP32-like exponent range, making it more robust for training and some inference paths.</p>
+<p><img src="../assets/projects/quantization/slides/fp32-fp16.png" alt="FP32 and FP16"></p>
+<p><img src="../assets/projects/quantization/slides/bf16.png" alt="BF16"></p>
+<p>The important deployment distinction is:</p>
+<pre><code class="language-text">storage dtype
+compute dtype
+accumulation dtype
+output dtype
+</code></pre>
+<p>These may differ. A model can store weights in INT8 or INT4 while using FP16/BF16 activations and higher-precision accumulation.</p>
+<h2>Weight-Only INT4/INT8 Quantization</h2>
+<p>The slides emphasize weight-only quantization:</p>
+<pre><code class="language-text">weights:      INT8 / INT4
+activations:  FP16 / BF16
+compute:      often FP16 / mixed precision
+</code></pre>
+<p>The runtime path is:</p>
+<pre><code class="language-text">INT4/INT8 weights stored in GPU memory
+        ↓
+load compressed weights
+        ↓
+load scale / zero-point metadata
+        ↓
+dequantize to FP16/BF16 or use fused kernel
+        ↓
+matmul with FP16/BF16 activations
+</code></pre>
+<p><img src="../assets/projects/quantization/slides/int4-int8.png" alt="INT4 and INT8 slide"></p>
+<p>The expected benefits are:</p>
+<ul>
+<li>Lower weight memory footprint.</li>
+<li>Lower memory bandwidth pressure for weight reads.</li>
+<li>Ability to fit larger models.</li>
+<li>More room for KV cache, larger batch, or higher concurrency.</li>
+<li>Lower hardware cost if a smaller GPU can serve the model.</li>
+</ul>
+<p>The costs are:</p>
+<ul>
+<li>Dequantization overhead.</li>
+<li>Scale and zero-point metadata.</li>
+<li>Kernel complexity.</li>
+<li>Dependence on GPU hardware support.</li>
+<li>Framework overhead in <code>generate()</code> and model dispatch.</li>
+</ul>
+<p>This is why lower precision is not automatically faster.</p>
+<h2>Mixed Precision and Salient Weights</h2>
+<p>The slides also introduce the idea that not all weights are equally important. Keeping a small fraction of salient weights or channels in higher precision can preserve quality better than quantizing everything uniformly.</p>
+<p><img src="../assets/projects/quantization/slides/mixed-precision-salient-weights.png" alt="Mixed precision salient weights"></p>
+<p>This is the motivation behind activation-aware or error-aware quantization methods: protect numerically sensitive parts of the model while compressing the rest.</p>
+<h2>AWQ vs GPTQ</h2>
+<p><img src="../assets/projects/quantization/awq-vs-gptq.png" alt="AWQ vs GPTQ comparison"></p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Full name</th>
+<th>Core idea</th>
+<th>Calibration</th>
+<th>Deployment intuition</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>AWQ</td>
+<td>Activation-aware Weight Quantization</td>
+<td>Protect important weights/channels based on activation sensitivity</td>
+<td>Yes, small calibration set</td>
+<td>Inference-friendly INT4 weight-only deployment with good quality preservation</td>
+</tr>
+<tr>
+<td>GPTQ</td>
+<td>GPT Quantization</td>
+<td>Quantize weights layer by layer while minimizing output reconstruction error</td>
+<td>Yes, small calibration set</td>
+<td>Strong compression, many pre-quantized model variants, but quantization process is more complex</td>
+</tr>
+</tbody></table>
+<p>AWQ uses real activation statistics to identify important weights or channels and protect them through scaling. Its intuition is that a small number of salient channels can strongly affect output quality.</p>
+<p><img src="../assets/projects/quantization/slides/awq-salient-weights.png" alt="AWQ salient weights"></p>
+<p><img src="../assets/projects/quantization/slides/awq-workflow.png" alt="AWQ workflow"></p>
+<p>GPTQ quantizes weights layer by layer or block by block while minimizing reconstruction error. The intuition is that small weight-level errors may be acceptable if the layer&#39;s output remains close enough to the original output.</p>
+<p><img src="../assets/projects/quantization/slides/gptq-intuition.png" alt="GPTQ intuition"></p>
+<p><img src="../assets/projects/quantization/slides/gptq-workflow.png" alt="GPTQ workflow"></p>
+<p>The PDF comparison table is included below:</p>
+<p><img src="../assets/projects/quantization/slides/awq-gptq-comparison.png" alt="AWQ GPTQ slide comparison"></p>
+<h2>Benchmark Setup</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Configuration</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU</td>
+<td>Tesla T4, 15 GB</td>
+</tr>
+<tr>
+<td>CUDA / driver context</td>
+<td>CUDA 12.8 compiler, NVIDIA driver reporting CUDA 13.0 runtime capability</td>
+</tr>
+<tr>
+<td>Model</td>
+<td><code>Qwen/Qwen2.5-0.5B-Instruct</code></td>
+</tr>
+<tr>
+<td>Baseline</td>
+<td>FP16 inference</td>
+</tr>
+<tr>
+<td>Quantized mode</td>
+<td>INT8 via <code>bitsandbytes</code> / Transformers</td>
+</tr>
+<tr>
+<td>Output sweep</td>
+<td>32, 64, 128 <code>max_new_tokens</code></td>
+</tr>
+<tr>
+<td>Prompt set</td>
+<td>4 short prompts, 24 total result rows across modes and lengths</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>TTFT, total latency, TPOT, throughput, peak allocated memory, peak reserved memory, output text</td>
+</tr>
+</tbody></table>
+<h2>Overall Result</h2>
+<p>The INT8 configuration reduced peak allocated GPU memory, but it was slower in this experiment. This is an important deployment result: quantization is not automatically a latency optimization unless the backend has efficient fused kernels and the workload benefits from reduced memory traffic.</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th align="right">TTFT</th>
+<th align="right">Total latency</th>
+<th align="right">TPOT</th>
+<th align="right">Throughput</th>
+<th align="right">Peak allocated memory</th>
+<th align="right">Peak reserved memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FP16 baseline</td>
+<td align="right">45.23 ms</td>
+<td align="right">2,860.48 ms</td>
+<td align="right">38.64 ms/token</td>
+<td align="right">26.28 tok/s</td>
+<td align="right">0.933 GB</td>
+<td align="right">0.936 GB</td>
+</tr>
+<tr>
+<td>INT8 quantized</td>
+<td align="right">192.01 ms</td>
+<td align="right">11,220.72 ms</td>
+<td align="right">155.70 ms/token</td>
+<td align="right">6.40 tok/s</td>
+<td align="right">0.601 GB</td>
+<td align="right">0.971 GB</td>
+</tr>
+<tr>
+<td>INT8 / FP16 ratio</td>
+<td align="right">4.25x</td>
+<td align="right">3.92x</td>
+<td align="right">4.03x</td>
+<td align="right">0.24x</td>
+<td align="right">0.64x</td>
+<td align="right">1.04x</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/quantization/ttft-bar.png" alt="TTFT comparison"></p>
+<h2>Output-Length Sweep</h2>
+<table>
+<thead>
+<tr>
+<th align="right"><code>max_new_tokens</code></th>
+<th>Mode</th>
+<th align="right">TTFT</th>
+<th align="right">Total latency</th>
+<th align="right">TPOT</th>
+<th align="right">Throughput</th>
+<th align="right">Peak allocated memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">32</td>
+<td>FP16</td>
+<td align="right">45.62 ms</td>
+<td align="right">1,238.32 ms</td>
+<td align="right">38.47 ms/token</td>
+<td align="right">26.11 tok/s</td>
+<td align="right">0.932 GB</td>
+</tr>
+<tr>
+<td align="right">32</td>
+<td>INT8</td>
+<td align="right">188.73 ms</td>
+<td align="right">5,019.39 ms</td>
+<td align="right">155.83 ms/token</td>
+<td align="right">6.39 tok/s</td>
+<td align="right">0.601 GB</td>
+</tr>
+<tr>
+<td align="right">64</td>
+<td>FP16</td>
+<td align="right">42.23 ms</td>
+<td align="right">2,365.46 ms</td>
+<td align="right">36.88 ms/token</td>
+<td align="right">27.24 tok/s</td>
+<td align="right">0.932 GB</td>
+</tr>
+<tr>
+<td align="right">64</td>
+<td>INT8</td>
+<td align="right">214.80 ms</td>
+<td align="right">10,002.26 ms</td>
+<td align="right">155.36 ms/token</td>
+<td align="right">6.40 tok/s</td>
+<td align="right">0.601 GB</td>
+</tr>
+<tr>
+<td align="right">128</td>
+<td>FP16</td>
+<td align="right">47.83 ms</td>
+<td align="right">4,977.65 ms</td>
+<td align="right">40.57 ms/token</td>
+<td align="right">25.50 tok/s</td>
+<td align="right">0.934 GB</td>
+</tr>
+<tr>
+<td align="right">128</td>
+<td>INT8</td>
+<td align="right">172.50 ms</td>
+<td align="right">18,640.51 ms</td>
+<td align="right">155.92 ms/token</td>
+<td align="right">6.41 tok/s</td>
+<td align="right">0.602 GB</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/quantization/tpot-bar.png" alt="TPOT comparison"></p>
+<p><img src="../assets/projects/quantization/throughput-bar.png" alt="Throughput comparison"></p>
+<p>The FP16 baseline sustained roughly 25-27 tokens/s across the sweep. The INT8 configuration stayed around 6.4 tokens/s, which indicates that the quantized path was dominated by overhead or slower kernels rather than by raw memory movement savings.</p>
+<h2>Latency And Memory Figures</h2>
+<p><img src="../assets/projects/quantization/total-latency-line.png" alt="Total latency by output length"></p>
+<p><img src="../assets/projects/quantization/peak-allocated-memory-bar.png" alt="Peak allocated GPU memory"></p>
+<p><img src="../assets/projects/quantization/peak-reserved-memory-bar.png" alt="Peak reserved GPU memory"></p>
+<p>The PDF also includes a summary plot slide for the measured benchmark:</p>
+<p><img src="../assets/projects/quantization/slides/benchmark-summary-plots.png" alt="Benchmark summary plots"></p>
+<p>Peak allocated memory dropped from about 0.933 GB to 0.601 GB, a 35.5% reduction. Peak reserved memory did not drop because PyTorch/CUDA memory reservation reflects allocator behavior, fragmentation, and cached blocks, not only live tensor allocation.</p>
+<p>The memory result should be interpreted carefully. <code>torch.cuda.max_memory_allocated()</code> measures PyTorch-tracked tensor allocation. It may not fully capture all non-standard allocator, library, or <code>bitsandbytes</code> memory. A safer interpretation is:</p>
+<pre><code class="language-text">INT8 reduced the model-weight footprint as expected,
+but overall GPU memory did not drop by a theoretical 2x
+because inference memory also includes KV cache, activations,
+temporary buffers, scales, metadata, CUDA context, and runtime allocations.
+</code></pre>
+<h2>Why INT8 Was Slower In This Benchmark</h2>
+<p>The most important result is that INT8 was not faster.</p>
+<table>
+<thead>
+<tr>
+<th>Comparison</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>INT8 TTFT</td>
+<td>About <code>4.2x</code> slower than FP16.</td>
+</tr>
+<tr>
+<td>INT8 TPOT</td>
+<td>About <code>4x</code> slower than FP16.</td>
+</tr>
+<tr>
+<td>INT8 throughput</td>
+<td>About <code>1/4</code> of FP16 throughput.</td>
+</tr>
+<tr>
+<td>INT8 allocated memory</td>
+<td>Lower than FP16.</td>
+</tr>
+</tbody></table>
+<p>This does not mean quantization is ineffective. It means quantization only becomes a speedup when the compressed representation is matched with efficient hardware and kernel support.</p>
+<p>Likely reasons:</p>
+<table>
+<thead>
+<tr>
+<th>Reason</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Dequantization overhead</td>
+<td>INT8 weights may need scale/metadata loads and conversion before matmul. If this cost exceeds memory savings, latency increases.</td>
+</tr>
+<tr>
+<td>Suboptimal kernel path</td>
+<td>T4 supports INT8 Tensor Core operations in principle, but Hugging Face + <code>bitsandbytes</code> + this model may not dispatch the best fused INT8 kernels.</td>
+</tr>
+<tr>
+<td>Small model size</td>
+<td>Qwen2.5-0.5B already fits easily in FP16 on a 15 GB T4, so weight memory pressure was not the main bottleneck.</td>
+</tr>
+<tr>
+<td>Low batch/concurrency</td>
+<td>Single-request, low-batch inference exposes launch/conversion overhead and may not fully utilize low-precision matrix hardware.</td>
+</tr>
+<tr>
+<td>Framework overhead</td>
+<td><code>generate()</code> orchestration, module dispatch, and unfused operations can dominate small-model inference.</td>
+</tr>
+</tbody></table>
+<p>The important engineering lesson is:</p>
+<pre><code class="language-text">lower precision != automatically lower latency
+</code></pre>
+<p>Actual performance depends on:</p>
+<pre><code class="language-text">hardware support
+optimized kernels
+dequantization overhead
+model size
+batch / concurrency
+memory bandwidth pressure
+serving runtime
+</code></pre>
+<h2>What The Benchmark Shows</h2>
+<table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Evidence</th>
+<th>Deployment implication</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>INT8 saves live GPU allocation</td>
+<td>Peak allocated memory ratio is 0.64x vs FP16</td>
+<td>Useful when fitting a model into limited memory or increasing room for KV cache/batch size</td>
+</tr>
+<tr>
+<td>INT8 is slower in this setup</td>
+<td>TPOT is 155.70 ms/token vs 38.64 ms/token</td>
+<td>Quantized inference needs efficient kernels; otherwise dequantization and framework overhead dominate</td>
+</tr>
+<tr>
+<td>Longer outputs expose decode cost</td>
+<td>INT8 TPOT is roughly flat around 155 ms/token across output lengths</td>
+<td>Decode-phase per-token overhead matters more as generation length grows</td>
+</tr>
+<tr>
+<td>Reserved memory can hide savings</td>
+<td>Reserved memory is slightly higher for INT8</td>
+<td>Use allocated memory plus allocator-aware profiling, not reserved memory alone</td>
+</tr>
+<tr>
+<td>Quality still needs review</td>
+<td>Outputs are logged with <code>quality_note = manual review needed</code></td>
+<td>Quantization evaluation should include correctness/quality checks, not only speed</td>
+</tr>
+</tbody></table>
+<h2>Connection To Serving Benchmark</h2>
+<p>This project connects naturally to the LLM serving benchmark.</p>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>What changes</th>
+<th>What is measured</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Serving benchmark</td>
+<td>Prompt length, output length, concurrency</td>
+<td>TTFT, TPOT, latency, throughput</td>
+</tr>
+<tr>
+<td>Quantization benchmark</td>
+<td>Precision/runtime path: FP16 vs INT8</td>
+<td>TTFT, TPOT, latency, throughput, memory, output quality</td>
+</tr>
+</tbody></table>
+<p>Together, they tell a fuller inference story:</p>
+<pre><code class="language-text">Serving benchmark:
+What workload factors affect inference?
+
+Quantization benchmark:
+What precision/runtime choices affect inference?
+</code></pre>
+<p>The correct deployment question is not:</p>
+<pre><code class="language-text">How much faster is INT8 than FP16?
+</code></pre>
+<p>It is:</p>
+<pre><code class="language-text">For this model, hardware, kernel implementation, workload, and serving engine,
+does INT8 improve the deployment objective?
+</code></pre>
+<h2>Result Analysis</h2>
+<p>This project demonstrates the core quantization tradeoff in a concrete serving-style benchmark. INT8 reduced live model memory, which is the expected benefit of lower-precision storage. However, the INT8 path was about 4x slower in TTFT and TPOT than FP16 on this T4 experiment. The likely reason is that the tested stack paid extra cost for dequantization, scale handling, and non-ideal kernel dispatch, while the FP16 path used better-supported GPU execution.</p>
+<p>The result does not mean quantization is ineffective. It means quantization has to be matched with the right model size, batch/concurrency regime, kernel backend, and hardware. For larger models or memory-constrained deployments, the memory reduction can enable workloads that FP16 cannot fit, or allow larger KV cache and higher concurrency. For small models on hardware with strong FP16 support, weight-only INT8 can be slower if the runtime cannot exploit the compressed representation efficiently.</p>
+<p>The practical takeaway is to evaluate quantization with both system metrics and output quality: memory footprint, TTFT, TPOT, throughput, p95 latency, reserved vs allocated memory, and qualitative answer consistency all matter before choosing FP16, INT8, AWQ, GPTQ, or more aggressive INT4 deployment.</p>
+<h2>Interview Summary</h2>
+<pre><code class="language-text">I built a controlled quantization benchmark using Qwen2.5-0.5B-Instruct on a Tesla T4.
+I compared an FP16 baseline against a bitsandbytes INT8 model under the same prompts
+and output lengths. I swept output lengths of 32, 64, and 128 tokens, used one warmup
+run followed by three measured runs, and recorded TTFT, TPOT, end-to-end latency,
+output-token throughput, peak GPU memory, and generated text for qualitative review.
+
+The interesting result was that INT8 was not faster. FP16 achieved about 26 tokens/s
+with roughly 39 ms TPOT, while INT8 achieved about 6.4 tokens/s with roughly 156 ms
+TPOT. TTFT increased from about 45 ms to 192 ms.
+
+My conclusion was that quantization does not automatically imply inference acceleration.
+Although INT8 reduces weight footprint in principle, the practical benefit depends on
+hardware-native precision support, optimized kernels, dequantization overhead, model size,
+batch/concurrency, and the serving runtime. In this small-model, low-batch T4 setup,
+INT8 reduced storage pressure but significantly hurt latency and throughput.
+</code></pre>
+<p>For an accelerator or systems interview, the useful point is not pretending that INT8 was faster. The useful point is being able to explain why it was slower and connect that result to kernel support, memory-bound vs compute-bound execution, dequantization overhead, and deployment-specific trade-offs.</p>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>

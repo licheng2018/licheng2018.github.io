@@ -1,0 +1,3775 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CUDA Kernel Development and Transformer Operator Optimization</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>CUDA Kernel Development and Transformer Operator Optimization</h1>
+<p>This project implements and analyzes CUDA kernels for core ML and Transformer operators, with a focus on correctness, memory access patterns, tiling, warp-level reductions, shared memory reuse, register-level optimization, profiling, and PyTorch C++/CUDA extension integration.</p>
+<p>Source repo: <a href="https://github.com/licheng2018/cuda_projects/tree/main">cuda_projects</a></p>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Jump to sections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Overview</td>
+<td><a href="#project-overview">Project Overview</a> · <a href="#visual-interview-map">Visual Interview Map</a> · <a href="#project-scope">Project Scope</a> · <a href="#operator-development-goals">Operator Development Goals</a> · <a href="#repository-structure">Repository Structure</a></td>
+</tr>
+<tr>
+<td>CUDA fundamentals</td>
+<td><a href="#vector-addition-cuda-programming-foundation">Vector Addition</a> · <a href="#cuda-memory-coalescing-strided-access-benchmark">Memory Coalescing</a> · <a href="#cuda-shared-memory-and-bank-conflict">Shared Memory and Bank Conflict</a> · <a href="#cuda-warp-level-reduction">Warp-Level Reduction</a> · <a href="#loop-unrolling-and-register-optimization">Loop Unrolling and Register Optimization</a></td>
+</tr>
+<tr>
+<td>ML operators</td>
+<td><a href="#matrix-multiplication">Matrix Multiplication</a> · <a href="#gemm-optimization-case-study">GEMM Optimization Case Study</a> · <a href="#softmax">Softmax</a> · <a href="#layernorm">LayerNorm</a> · <a href="#pytorch-ccuda-extensions">PyTorch Extensions</a> · <a href="#naive-attention-and-io-bound-analysis">Naive Attention</a></td>
+</tr>
+<tr>
+<td>Analysis</td>
+<td><a href="#profiling-focus">Profiling Focus</a> · <a href="#main-takeaways">Main Takeaways</a> · <a href="#experiment-result-analysis">Experiment Result Analysis</a></td>
+</tr>
+</tbody></table>
+<h2>Project Overview</h2>
+<p>Modern deep learning workloads are often limited not only by arithmetic throughput, but also by memory traffic, synchronization overhead, kernel launch overhead, and inefficient mapping of computation onto GPU hardware.</p>
+<p>The goal of this project is to study the complete lifecycle of GPU operator development, starting from fundamental CUDA programming and gradually progressing toward production-style implementations of commonly used Transformer operators.</p>
+<p>Instead of focusing only on writing functionally correct kernels, this project emphasizes three equally important aspects:</p>
+<ul>
+<li><strong>Correctness:</strong> ensuring that custom CUDA kernels produce results consistent with CPU or PyTorch reference implementations.</li>
+<li><strong>Performance:</strong> improving memory access, parallel reduction, data reuse, and kernel organization.</li>
+<li><strong>Integration:</strong> exposing CUDA kernels as reusable PyTorch C++/CUDA extensions.</li>
+</ul>
+<p>The project was designed as an end-to-end learning and engineering exercise for GPU kernel development, machine learning systems, and accelerator-oriented software optimization.</p>
+<h3>Visual Interview Map</h3>
+<p>These diagrams summarize the main CUDA concepts and ML operator case studies in one place, so the project can be explained quickly before drilling into implementation details.</p>
+<p><strong>CUDA execution model and grid-stride loops</strong></p>
+<p><img src="../assets/projects/cuda-kernels/vector-add-thread-mapping-grid-stride.png" alt="CUDA vector addition thread mapping and grid-stride loop"></p>
+<p><strong>Global memory coalescing</strong></p>
+<p><img src="../assets/projects/cuda-kernels/memory-coalescing-warp-access-pattern.png" alt="CUDA memory coalescing warp access pattern and memory transactions"></p>
+<p><strong>Shared memory and bank conflicts</strong></p>
+<p><img src="../assets/projects/cuda-kernels/shared-memory-bank-conflict-overview.png" alt="CUDA shared memory bank conflicts, strided access, and padding"></p>
+<p><img src="../assets/projects/cuda-kernels/shared-memory-bank-conflict-clean-benchmark.png" alt="CUDA shared memory bank conflicts clean benchmark and padding explanation"></p>
+<p><strong>Warp-level reduction</strong></p>
+<p><img src="../assets/projects/cuda-kernels/warp-level-reduction-overview.png" alt="CUDA warp-level reduction with shuffle and block reduction"></p>
+<p><strong>Loop unrolling and register optimization</strong></p>
+<p><img src="../assets/projects/cuda-kernels/loop-unrolling-register-optimization.png" alt="CUDA loop unrolling and register optimization mechanism, trade-off, and measured results"></p>
+<p><strong>Matrix multiplication optimization path</strong></p>
+<p><img src="../assets/projects/cuda-kernels/matmul-optimization-overall-pipeline.png" alt="CUDA matrix multiplication optimization overall pipeline"></p>
+<p><strong>GEMM tile-size trade-off</strong></p>
+<p><img src="../assets/projects/cuda-kernels/matmul-tile16-vs-tile32-tradeoff.png" alt="CUDA MatMul tile size trade-off between 16x16 and 32x32"></p>
+<p><strong>Tiled MatMul dataflow</strong></p>
+<p><img src="../assets/projects/cuda-kernels/matmul-tiled-dataflow.png" alt="CUDA shared-memory tiled MatMul dataflow"></p>
+<p><strong>Naive vs tiled MatMul memory traffic</strong></p>
+<p><img src="../assets/projects/cuda-kernels/matmul-naive-vs-tiled-memory-traffic.png" alt="CUDA MatMul naive versus tiled memory traffic and data reuse"></p>
+<p><strong>Nsight Compute profiling workflow</strong></p>
+<p><img src="../assets/projects/cuda-kernels/nsight-compute-profiling-workflow.png" alt="CUDA Nsight Compute profiling workflow from runtime symptom to root cause"></p>
+<p><strong>Nsight root-cause analysis for GEMM</strong></p>
+<p><img src="../assets/projects/cuda-kernels/nsight-matmul-root-cause-analysis.png" alt="CUDA MatMul Nsight root-cause analysis for Tile16, Tile32, and Tile32 with padding"></p>
+<p><strong>Stable Softmax dataflow</strong></p>
+<p><img src="../assets/projects/cuda-kernels/softmax-stable-reduction-dataflow.png" alt="CUDA stable Softmax and reduction dataflow"></p>
+<p><strong>Softmax mapping strategies</strong></p>
+<p><img src="../assets/projects/cuda-kernels/softmax-row-mapping-strategy-comparison.png" alt="CUDA Softmax row mapping strategy comparison across warp-per-row, block-per-row, and multi-warp-per-row"></p>
+<p><strong>LayerNorm forward</strong></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-forward-reduction-normalize-dataflow.png" alt="CUDA LayerNorm forward reduction and normalize dataflow"></p>
+<p><strong>LayerNorm backward</strong></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png" alt="CUDA LayerNorm backward gradient propagation and reduction paths"></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-backward-atomic-vs-two-pass-reduction.png" alt="CUDA LayerNorm backward AtomicAdd versus two-pass reduction"></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-two-pass-backward-error-root-cause.png" alt="LayerNorm two-pass backward error root cause"></p>
+<h2>Project Scope</h2>
+<p>The project spans both low-level GPU programming and higher-level machine learning operator engineering:</p>
+<ul>
+<li>CUDA execution model and kernel launch configuration.</li>
+<li>Thread, warp, block, and grid-level workload mapping.</li>
+<li>Grid-stride loops and scalable kernel design.</li>
+<li>GPU memory hierarchy and memory-access optimization.</li>
+<li>Coalesced global-memory access.</li>
+<li>Shared-memory tiling and data reuse.</li>
+<li>Shared-memory bank conflicts.</li>
+<li>Register reuse and loop unrolling.</li>
+<li>Warp-level and block-level reductions.</li>
+<li>Synchronization and race-condition avoidance.</li>
+<li>Softmax and online Softmax.</li>
+<li>LayerNorm forward and backward.</li>
+<li>Matrix multiplication using shared-memory tiling.</li>
+<li>Kernel fusion, including fused Bias + GELU.</li>
+<li>PyTorch C++/CUDA extension development.</li>
+<li>Correctness and gradient validation.</li>
+<li>Benchmarking and profiler-based bottleneck analysis.</li>
+</ul>
+<h2>Operator Development Goals</h2>
+<p>The goal was to understand how GPU kernel design choices affect the performance of ML operators that appear repeatedly in transformer workloads:</p>
+<ul>
+<li>Matrix multiplication.</li>
+<li>Layer normalization forward and backward.</li>
+<li>Numerically stable softmax.</li>
+<li>Fused elementwise / activation extensions.</li>
+<li>Naive attention score, softmax, and output stages.</li>
+</ul>
+<p>The project starts from simple CUDA baselines, then adds progressively more hardware-aware optimizations such as block tiling, shared memory, padding to avoid bank conflicts, warp shuffle reductions, loop unrolling, register reuse, and PyTorch extension wrappers.</p>
+<h2>Repository Structure</h2>
+<p>The repo is organized as a progression from CUDA fundamentals to ML operator kernels:</p>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Files</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CUDA basics</td>
+<td><code>basic/0_cuda_computation.ipynb</code>, <code>1_vector_add.ipynb</code>, <code>2_memory_coalescing.ipynb</code>, <code>3_shared_memory_and_bank_conflict.ipynb</code>, <code>4_warp_level_reduction.ipynb</code></td>
+<td>Build intuition for execution hierarchy, memory coalescing, shared memory, bank conflicts, and warp reductions.</td>
+</tr>
+<tr>
+<td>Week 1 operators</td>
+<td><code>project/week1_matmul_laynorm_softmax/*</code></td>
+<td>Matrix multiplication, loop unrolling, Nsight profiling, LayerNorm, and Softmax kernels.</td>
+</tr>
+<tr>
+<td>PyTorch extensions</td>
+<td><code>project/week2_pytorch_extension/*</code></td>
+<td>C++/CUDA extension loading, TensorAccessor usage, LayerNorm extension, autograd checks, and fused Bias+GELU.</td>
+</tr>
+</tbody></table>
+<h2>Vector Addition: CUDA Programming Foundation</h2>
+<p><img src="../assets/projects/cuda-kernels/vector-add-thread-mapping-grid-stride.png" alt="CUDA vector addition thread mapping and grid-stride loop"></p>
+<p>The vector-addition notebook is the introductory experiment in the CUDA project. It uses the simplest possible elementwise operation:</p>
+<pre><code class="language-text">C[i] = A[i] + B[i]
+</code></pre>
+<p>The goal is not to prove that vector addition is a complex algorithm. Instead, the notebook establishes the CUDA development workflow used by later kernels such as MatMul, LayerNorm, Softmax, and FlashAttention-style attention.</p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#what-this-experiment-teaches">What This Experiment Teaches</a></li>
+<li><a href="#basic-one-thread-per-element-kernel">Basic One-Thread-Per-Element Kernel</a></li>
+<li><a href="#grid-stride-loop-kernel">Grid-Stride Loop Kernel</a></li>
+<li><a href="#example-one-thread-per-element-vs-grid-stride-loop">Interview Example: One Thread per Element vs Grid-Stride Loop</a></li>
+<li><a href="#host-device-workflow">Host-Device Workflow</a></li>
+<li><a href="#correctness-result">Correctness Result</a></li>
+<li><a href="#key-takeaways">Key Takeaways</a></li>
+</ul>
+<h3>What This Experiment Teaches</h3>
+<table>
+<thead>
+<tr>
+<th>Topic</th>
+<th>What the notebook demonstrates</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>CUDA execution hierarchy</td>
+<td>How threads, blocks, and grids are organized.</td>
+</tr>
+<tr>
+<td>Thread-to-data mapping</td>
+<td>How a global thread index maps one GPU thread to one output element.</td>
+</tr>
+<tr>
+<td>Launch configuration</td>
+<td>How to choose <code>blockDim</code>, <code>gridDim</code>, and use ceiling division to cover an input.</td>
+</tr>
+<tr>
+<td>Boundary handling</td>
+<td>Why <code>if (id &lt; N)</code> is required when the final block has extra threads.</td>
+</tr>
+<tr>
+<td>Memory management</td>
+<td>Difference between unified memory and explicit host/device memory allocation.</td>
+</tr>
+<tr>
+<td>Grid-stride loop</td>
+<td>How fixed-size grids can process arrays larger than the number of launched threads.</td>
+</tr>
+<tr>
+<td>Correctness workflow</td>
+<td>How to compare GPU results against a CPU reference with a tolerance.</td>
+</tr>
+<tr>
+<td>Error handling</td>
+<td>How to check launch errors and asynchronous device execution errors.</td>
+</tr>
+</tbody></table>
+<h3>Basic One-Thread-Per-Element Kernel</h3>
+<p>The first implementation maps one CUDA thread to one output element:</p>
+<pre><code class="language-cpp">__global__ void vector_add(float* a, float* b, float* c, int n) {
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (id &lt; n) {
+        c[id] = a[id] + b[id];
+    }
+}
+</code></pre>
+<p>The key indexing expression is:</p>
+<pre><code class="language-cpp">int id = blockIdx.x * blockDim.x + threadIdx.x;
+</code></pre>
+<p>This converts a serial CPU loop into a parallel GPU mapping:</p>
+<table>
+<thead>
+<tr>
+<th>CPU version</th>
+<th>CUDA version</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>One loop processes all elements serially.</td>
+<td>Many GPU threads process elements in parallel.</td>
+</tr>
+<tr>
+<td><code>for (int i = 0; i &lt; N; i++)</code></td>
+<td><code>id = blockIdx.x * blockDim.x + threadIdx.x</code></td>
+</tr>
+<tr>
+<td><code>C[i] = A[i] + B[i]</code></td>
+<td><code>C[id] = A[id] + B[id]</code></td>
+</tr>
+</tbody></table>
+<p>For the basic experiment:</p>
+<table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>N</code></td>
+<td align="right">1024 elements</td>
+</tr>
+<tr>
+<td>Threads per block</td>
+<td align="right">256</td>
+</tr>
+<tr>
+<td>Blocks</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>Total launched threads</td>
+<td align="right">1024</td>
+</tr>
+<tr>
+<td>Memory model</td>
+<td align="right">Unified memory via <code>cudaMallocManaged</code></td>
+</tr>
+<tr>
+<td>Example output</td>
+<td align="right"><code>0 3 6 9 12 15 18 21 24 27</code></td>
+</tr>
+</tbody></table>
+<p>The first ten GPU outputs match the CPU reference outputs.</p>
+<h3>Grid-Stride Loop Kernel</h3>
+<p>The second implementation introduces a more reusable CUDA pattern:</p>
+<pre><code class="language-cpp">__global__ void vectorAddGridStride(
+    const float* A,
+    const float* B,
+    float* C,
+    int N
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+
+    for (int i = tid; i &lt; N; i += stride) {
+        C[i] = A[i] + B[i];
+    }
+}
+</code></pre>
+<p>A grid-stride loop decouples the input size from the number of launched threads. Each thread starts from its global thread ID and advances by the total grid size:</p>
+<pre><code class="language-text">Thread 0 -&gt; 0, stride, 2*stride, ...
+Thread 1 -&gt; 1, stride + 1, 2*stride + 1, ...
+Thread 2 -&gt; 2, stride + 2, 2*stride + 2, ...
+</code></pre>
+<p>This pattern is important because it preserves coalesced access within each loop iteration. Adjacent threads in the same warp still access adjacent elements such as <code>A[0]</code>, <code>A[1]</code>, ..., <code>A[31]</code>, then <code>A[stride]</code>, <code>A[stride + 1]</code>, and so on.</p>
+<h3>Example: One Thread per Element vs Grid-Stride Loop</h3>
+<p>This small example is useful for explaining the idea quickly in an interview.</p>
+<p>Assume:</p>
+<pre><code class="language-text">N = 16 elements
+blockDim.x = 4 threads per block
+gridDim.x = 2 blocks
+</code></pre>
+<p>The total number of launched threads is:</p>
+<pre><code class="language-text">2 blocks * 4 threads/block = 8 threads
+</code></pre>
+<p>With the basic one-thread-per-element kernel:</p>
+<pre><code class="language-cpp">int id = blockIdx.x * blockDim.x + threadIdx.x;
+
+if (id &lt; N) {
+    C[id] = A[id] + B[id];
+}
+</code></pre>
+<p>the eight launched threads process only the first eight elements:</p>
+<pre><code class="language-text">Thread 0 -&gt; element 0
+Thread 1 -&gt; element 1
+Thread 2 -&gt; element 2
+Thread 3 -&gt; element 3
+Thread 4 -&gt; element 4
+Thread 5 -&gt; element 5
+Thread 6 -&gt; element 6
+Thread 7 -&gt; element 7
+</code></pre>
+<p>Elements <code>8</code> through <code>15</code> are not processed because no launched thread has a global ID larger than <code>7</code>. To process all 16 elements with this approach, the launch configuration must create at least 16 threads.</p>
+<p>With the grid-stride loop:</p>
+<pre><code class="language-cpp">int tid = blockIdx.x * blockDim.x + threadIdx.x;
+int stride = blockDim.x * gridDim.x;
+
+for (int i = tid; i &lt; N; i += stride) {
+    C[i] = A[i] + B[i];
+}
+</code></pre>
+<p>the stride is:</p>
+<pre><code class="language-text">stride = 4 * 2 = 8
+</code></pre>
+<p>Each thread processes one element in the first pass and one more element in the second pass:</p>
+<pre><code class="language-text">Thread 0 -&gt; elements 0 and 8
+Thread 1 -&gt; elements 1 and 9
+Thread 2 -&gt; elements 2 and 10
+Thread 3 -&gt; elements 3 and 11
+Thread 4 -&gt; elements 4 and 12
+Thread 5 -&gt; elements 5 and 13
+Thread 6 -&gt; elements 6 and 14
+Thread 7 -&gt; elements 7 and 15
+</code></pre>
+<p>All 16 elements are covered even though only 8 threads were launched. The key point is:</p>
+<table>
+<thead>
+<tr>
+<th>Mapping style</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>One thread per element</td>
+<td>One thread computes exactly one output element; the launch must provide enough threads for the input size.</td>
+</tr>
+<tr>
+<td>Grid-stride loop</td>
+<td>One thread can process multiple elements separated by the grid-wide stride; the launch configuration can be reused for larger inputs.</td>
+</tr>
+</tbody></table>
+<p>This does not automatically make the grid-stride version faster. Its value is scalability, flexibility, and a cleaner reusable CUDA kernel pattern.</p>
+<h3>Host-Device Workflow</h3>
+<p>The more complete version uses explicit memory management rather than unified memory:</p>
+<pre><code class="language-text">Allocate host memory
+        ↓
+Initialize input arrays
+        ↓
+Allocate device memory with cudaMalloc
+        ↓
+Copy A and B from host to device
+        ↓
+Launch CUDA kernel
+        ↓
+Check launch error with cudaGetLastError
+        ↓
+Synchronize with cudaDeviceSynchronize
+        ↓
+Copy C from device to host
+        ↓
+Compute CPU reference output
+        ↓
+Validate GPU output against CPU output
+        ↓
+Free host and device memory
+</code></pre>
+<p>The notebook also uses a CUDA error-checking macro around CUDA API calls and checks both:</p>
+<ul>
+<li><code>cudaGetLastError()</code> for immediate launch-related errors.</li>
+<li><code>cudaDeviceSynchronize()</code> for asynchronous execution errors such as illegal memory access.</li>
+</ul>
+<h3>Correctness Result</h3>
+<p>The grid-stride experiment uses a larger input:</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>N</code></td>
+<td align="right"><code>2^24 = 16,777,216</code> elements</td>
+</tr>
+<tr>
+<td>Approximate bytes per array</td>
+<td align="right">64 MiB</td>
+</tr>
+<tr>
+<td>Device arrays</td>
+<td align="right"><code>dA</code>, <code>dB</code>, <code>dC</code></td>
+</tr>
+<tr>
+<td>Approximate device-array memory</td>
+<td align="right">192 MiB</td>
+</tr>
+<tr>
+<td>CPU reference</td>
+<td align="right">Serial vector addition</td>
+</tr>
+<tr>
+<td>Tolerance</td>
+<td align="right"><code>1e-6</code></td>
+</tr>
+<tr>
+<td>Result</td>
+<td align="right"><code>Correctness: PASS</code></td>
+</tr>
+</tbody></table>
+<p>This validates that the GPU grid-stride kernel matched the CPU reference for approximately 16.7 million floating-point elements.</p>
+<h3>What This Experiment Does Not Claim</h3>
+<p>This notebook should be described as a correctness and CUDA-programming-pattern experiment, not as a performance-optimization result.</p>
+<p>It does not yet report:</p>
+<ul>
+<li>GPU kernel latency.</li>
+<li>CPU latency.</li>
+<li>Host-to-device or device-to-host transfer time.</li>
+<li>Effective memory bandwidth.</li>
+<li>Block-size sweeps.</li>
+<li>CPU-GPU speedup.</li>
+<li>Nsight Compute memory-transaction metrics.</li>
+</ul>
+<p>The grid-stride loop is therefore not claimed to be faster than the basic kernel. Its main contribution is scalability, reusable launch configuration, and a production-style indexing pattern.</p>
+<p>One experimental nuance is that the current grid-stride configuration still launches enough threads to cover the whole input:</p>
+<pre><code class="language-cpp">int blockSize = 256;
+int gridSize = (N + blockSize - 1) / blockSize;
+</code></pre>
+<p>Because <code>gridSize * blockSize &gt;= N</code>, most threads execute the loop only once. A clearer demonstration of thread reuse would fix the grid size, for example:</p>
+<pre><code class="language-cpp">int blockSize = 256;
+int gridSize = 256;
+</code></pre>
+<p>Then only 65,536 threads would process 16,777,216 elements, and each thread would process roughly 256 elements through the grid-stride loop.</p>
+<h3>Key Takeaways</h3>
+<table>
+<thead>
+<tr>
+<th>Takeaway</th>
+<th>Why it matters later</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Global thread indexing</td>
+<td>Foundation for elementwise kernels, activation functions, residual adds, and tensor scaling.</td>
+</tr>
+<tr>
+<td>Boundary checks</td>
+<td>Required for safe kernels when input sizes do not align with block sizes.</td>
+</tr>
+<tr>
+<td>Grid-stride loops</td>
+<td>Reusable pattern for scalable CUDA kernels and fixed launch configurations.</td>
+</tr>
+<tr>
+<td>Coalesced access</td>
+<td>Introduces the memory-access reasoning later used in Softmax, LayerNorm, and attention kernels.</td>
+</tr>
+<tr>
+<td>Correctness before performance</td>
+<td>Establishes the validation workflow reused for more complex ML operators.</td>
+</tr>
+<tr>
+<td>Explicit memory management</td>
+<td>Prepares for measuring H2D, kernel, and D2H costs independently.</td>
+</tr>
+</tbody></table>
+<h2>CUDA Memory Coalescing: Strided Access Benchmark</h2>
+<p><img src="../assets/projects/cuda-kernels/memory-coalescing-warp-access-pattern.png" alt="CUDA memory coalescing warp access pattern and memory transactions"></p>
+<p>This notebook extends the previous Vector Addition project. The vector-addition notebook mainly answers:</p>
+<pre><code class="language-text">How do we map computation onto CUDA threads?
+</code></pre>
+<p>The memory-coalescing notebook asks the next performance question:</p>
+<pre><code class="language-text">Even if we launch many GPU threads, why can a kernel still be slow?
+</code></pre>
+<p>One of the main answers is the global-memory access pattern. GPUs care not only about how much data a kernel accesses, but also whether threads in the same warp access contiguous and well-aligned memory addresses.</p>
+<p>This project modifies vector addition from:</p>
+<pre><code class="language-cpp">C[i] = A[i] + B[i];
+</code></pre>
+<p>to a strided memory-access pattern:</p>
+<pre><code class="language-cpp">int idx = i * stride;
+C[idx] = A[idx] + B[idx];
+</code></pre>
+<p>By comparing <code>stride = 1</code>, <code>2</code>, and <code>4</code>, the notebook experimentally shows the performance chain:</p>
+<pre><code class="language-text">worse coalescing -&gt; more memory transactions -&gt; lower effective bandwidth -&gt; longer kernel runtime
+</code></pre>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#motivation-parallelism-is-not-enough">Motivation: Parallelism Is Not Enough</a></li>
+<li><a href="#memory-coalescing-intuition">Memory Coalescing Intuition</a></li>
+<li><a href="#strided-vector-addition-kernel">Strided Vector Addition Kernel</a></li>
+<li><a href="#concrete-warp-level-example">Concrete Warp-Level Example</a></li>
+<li><a href="#why-larger-memory-stride-hurts">Why Larger Memory Stride Hurts</a></li>
+<li><a href="#benchmark-setup">Benchmark Setup</a></li>
+<li><a href="#experimental-results">Experimental Results</a></li>
+<li><a href="#correctness-verification-and-caveat">Correctness Verification and Caveat</a></li>
+<li><a href="#key-takeaways-1">Key Takeaways</a></li>
+</ul>
+<h3>Motivation: Parallelism Is Not Enough</h3>
+<p>A common beginner assumption is that moving computation to the GPU and launching many threads automatically makes the program fast. In practice, GPU performance is also affected by:</p>
+<ul>
+<li>Global-memory access pattern.</li>
+<li>Memory coalescing.</li>
+<li>Cache-line and memory-sector utilization.</li>
+<li>Number of memory transactions.</li>
+<li>Arithmetic intensity.</li>
+<li>Warp stalls.</li>
+<li>Synchronization overhead.</li>
+</ul>
+<p>This experiment demonstrates that two kernels can have the same arithmetic work, same number of threads, and same launch configuration, yet differ by several times in runtime simply because their memory addresses are accessed differently.</p>
+<p>This is especially important for ML kernels. Operators such as LayerNorm, Softmax, attention, embedding lookup, tensor transpose, and gather/scatter-heavy workloads often spend a large fraction of time waiting on global memory.</p>
+<h3>Memory Coalescing Intuition</h3>
+<p>NVIDIA GPUs execute threads in warps. A warp usually contains 32 threads. Suppose each thread reads one <code>float</code>, and each <code>float</code> is 4 bytes.</p>
+<p>If a warp accesses:</p>
+<pre><code class="language-text">Thread 0  -&gt; A[0]
+Thread 1  -&gt; A[1]
+Thread 2  -&gt; A[2]
+...
+Thread 31 -&gt; A[31]
+</code></pre>
+<p>then the warp accesses a contiguous 128-byte region:</p>
+<pre><code class="language-text">32 threads * 4 bytes/thread = 128 bytes
+</code></pre>
+<p>This is a coalesced access pattern. It can be served with a small number of memory transactions, depending on architecture and address alignment.</p>
+<p>If the warp instead accesses:</p>
+<pre><code class="language-text">Thread 0  -&gt; A[0]
+Thread 1  -&gt; A[4]
+Thread 2  -&gt; A[8]
+...
+Thread 31 -&gt; A[124]
+</code></pre>
+<p>then each thread still reads only one <code>float</code>, but the addresses are spread across a much larger memory range. The GPU must issue more memory transactions, and many bytes fetched by those transactions are not useful to the current warp. The useful data has not changed, but transaction count and wasted memory traffic increase.</p>
+<h3>Project Scope</h3>
+<p>The notebook contains four main parts:</p>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Configurable strided vector-add kernel</td>
+<td>Use the same arithmetic operation while changing the physical memory access pattern.</td>
+</tr>
+<tr>
+<td>Stride sweep</td>
+<td>Run <code>stride = 1</code>, <code>2</code>, and <code>4</code> to compare coalesced and less-coalesced access.</td>
+</tr>
+<tr>
+<td>CUDA-event benchmark</td>
+<td>Measure average GPU kernel latency using CUDA events.</td>
+</tr>
+<tr>
+<td>Effective-bandwidth calculation and correctness check</td>
+<td>Compute useful bandwidth from <code>N * 3 * sizeof(float)</code> and compare GPU output with a CPU reference.</td>
+</tr>
+</tbody></table>
+<p>The notebook description also planned to use Nsight Systems to analyze kernel duration, GPU utilization, memory throughput, CPU-GPU synchronization, and idle periods. However, the current saved notebook does not include <code>nsys profile</code> commands, <code>.nsys-rep</code> files, SQLite reports, timeline screenshots, or Nsight statistics. Therefore, the completed result should be described as a CUDA-event benchmark, not a full Nsight Systems profiling study.</p>
+<h3>Strided Vector Addition Kernel</h3>
+<p>The core kernel is:</p>
+<pre><code class="language-cpp">__global__ void vectorAddStrided(
+    const float* A,
+    const float* B,
+    float* C,
+    int N,
+    int stride
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int gridStride = blockDim.x * gridDim.x;
+
+    if (tid &lt; N) {
+        for (int i = tid; i &lt; N; i += gridStride) {
+            int idx = i * stride;
+            C[idx] = A[idx] + B[idx];
+        }
+    }
+}
+</code></pre>
+<p>There are two different meanings of stride in this kernel, and they should not be confused.</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Grid stride</td>
+<td><code>gridStride = blockDim.x * gridDim.x</code></td>
+<td>Controls which logical work items are assigned to the same thread across loop iterations.</td>
+</tr>
+<tr>
+<td>Memory stride</td>
+<td><code>idx = i * stride</code></td>
+<td>Controls the physical distance between memory addresses accessed by neighboring threads.</td>
+</tr>
+</tbody></table>
+<p>The grid-stride loop comes from the previous Vector Addition project:</p>
+<pre><code class="language-cpp">for (int i = tid; i &lt; N; i += gridStride)
+</code></pre>
+<p>Its purpose is to let one thread process multiple logical elements and decouple the launch configuration from the input size.</p>
+<p>The memory stride is the subject of this experiment:</p>
+<pre><code class="language-cpp">int idx = i * stride;
+</code></pre>
+<p>It intentionally changes the physical addresses accessed by neighboring threads:</p>
+<pre><code class="language-text">stride = 1: tid 0 -&gt; A[0], tid 1 -&gt; A[1]
+stride = 2: tid 0 -&gt; A[0], tid 1 -&gt; A[2]
+stride = 4: tid 0 -&gt; A[0], tid 1 -&gt; A[4]
+</code></pre>
+<p>In one sentence:</p>
+<pre><code class="language-text">gridStride determines which logical work items are assigned to the same thread,
+while memory stride determines the physical distance between addresses accessed
+by neighboring threads.
+</code></pre>
+<h3>Concrete Warp-Level Example</h3>
+<p>This example is useful for explaining memory coalescing in an interview. To keep the example small, consider only 8 threads, where each thread reads one 4-byte <code>float</code>.</p>
+<h4>Stride = 1</h4>
+<pre><code class="language-cpp">idx = tid;
+</code></pre>
+<p>Access pattern:</p>
+<pre><code class="language-text">Thread 0 -&gt; A[0]
+Thread 1 -&gt; A[1]
+Thread 2 -&gt; A[2]
+Thread 3 -&gt; A[3]
+Thread 4 -&gt; A[4]
+Thread 5 -&gt; A[5]
+Thread 6 -&gt; A[6]
+Thread 7 -&gt; A[7]
+</code></pre>
+<p>The byte addresses are:</p>
+<pre><code class="language-text">0, 4, 8, 12, 16, 20, 24, 28
+</code></pre>
+<p>The 8 threads read 32 bytes of useful data, and those 32 bytes are contiguous. For a full warp:</p>
+<pre><code class="language-text">Thread 0-31 -&gt; A[0-31]
+</code></pre>
+<p>The access span is:</p>
+<pre><code class="language-text">32 * 4 = 128 bytes
+</code></pre>
+<p>This is the ideal access pattern.</p>
+<h4>Stride = 2</h4>
+<pre><code class="language-cpp">idx = tid * 2;
+</code></pre>
+<p>Access pattern:</p>
+<pre><code class="language-text">Thread 0 -&gt; A[0]
+Thread 1 -&gt; A[2]
+Thread 2 -&gt; A[4]
+Thread 3 -&gt; A[6]
+...
+Thread 7 -&gt; A[14]
+</code></pre>
+<p>The byte addresses are:</p>
+<pre><code class="language-text">0, 8, 16, 24, 32, 40, 48, 56
+</code></pre>
+<p>The 8 threads still need only 32 bytes of useful data, but the access range expands to roughly 60 bytes. For a full warp:</p>
+<pre><code class="language-text">Thread 0-31 -&gt; A[0], A[2], ..., A[62]
+</code></pre>
+<p>The byte-address span is approximately:</p>
+<pre><code class="language-text">63 * 4 = 252 bytes
+</code></pre>
+<p>The GPU must touch more sectors or cache lines, and roughly half of the fetched data is not used by the current warp.</p>
+<h4>Stride = 4</h4>
+<pre><code class="language-cpp">idx = tid * 4;
+</code></pre>
+<p>Access pattern:</p>
+<pre><code class="language-text">Thread 0 -&gt; A[0]
+Thread 1 -&gt; A[4]
+Thread 2 -&gt; A[8]
+Thread 3 -&gt; A[12]
+...
+Thread 7 -&gt; A[28]
+</code></pre>
+<p>The byte addresses are:</p>
+<pre><code class="language-text">0, 16, 32, 48, 64, 80, 96, 112
+</code></pre>
+<p>For a full warp:</p>
+<pre><code class="language-text">Thread 0-31 -&gt; A[0], A[4], ..., A[124]
+</code></pre>
+<p>The address span is close to:</p>
+<pre><code class="language-text">125 * 4 = 500 bytes
+</code></pre>
+<p>The warp still requests only:</p>
+<pre><code class="language-text">32 * 4 = 128 bytes of useful data
+</code></pre>
+<p>but that useful data is scattered across a much larger address range, so more memory transactions are required. This is why the arithmetic work remains identical while kernel runtime increases sharply.</p>
+<h3>Why Larger Memory Stride Hurts</h3>
+<p>Vector addition performs one floating-point operation per output element:</p>
+<pre><code class="language-cpp">C[idx] = A[idx] + B[idx];
+</code></pre>
+<p>Each logical output element requires:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th align="right">Useful bytes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Load <code>A[idx]</code></td>
+<td align="right">4 bytes</td>
+</tr>
+<tr>
+<td>Load <code>B[idx]</code></td>
+<td align="right">4 bytes</td>
+</tr>
+<tr>
+<td>Store <code>C[idx]</code></td>
+<td align="right">4 bytes</td>
+</tr>
+<tr>
+<td>Floating-point add</td>
+<td align="right">1 FLOP</td>
+</tr>
+</tbody></table>
+<p>The arithmetic intensity is approximately:</p>
+<pre><code class="language-text">1 FLOP / 12 bytes = 0.083 FLOP/byte
+</code></pre>
+<p>This is very low, so vector addition is a memory-bound kernel. When memory stride increases:</p>
+<ul>
+<li>Useful computation does not increase.</li>
+<li>Useful bytes do not increase.</li>
+<li>Memory transactions increase.</li>
+<li>Cache-line and memory-sector utilization decrease.</li>
+<li>Effective bandwidth decreases.</li>
+<li>Warps spend more time waiting on memory.</li>
+<li>Kernel runtime increases.</li>
+</ul>
+<p>The causal chain is:</p>
+<pre><code class="language-text">larger stride -&gt; less coalesced access -&gt; more memory transactions
+              -&gt; more memory stalls -&gt; longer runtime
+</code></pre>
+<h3>Benchmark Setup</h3>
+<p>The notebook uses:</p>
+<pre><code class="language-cpp">const int N = 1 &lt;&lt; 24;
+const int strides[] = {1, 2, 4};
+</code></pre>
+<p>So the logical output size is:</p>
+<pre><code class="language-text">N = 2^24 = 16,777,216 elements
+</code></pre>
+<p>Because the largest accessed index is approximately <code>(N - 1) * 4</code>, the code allocates:</p>
+<pre><code class="language-cpp">allocCount = N * maxStride;
+</code></pre>
+<p>That is:</p>
+<pre><code class="language-text">16,777,216 * 4 = 67,108,864 floats
+</code></pre>
+<p>Each array is approximately:</p>
+<pre><code class="language-text">67,108,864 floats * 4 bytes = 268,435,456 bytes = 256 MiB
+</code></pre>
+<p>The device allocation contains three arrays:</p>
+<pre><code class="language-text">dA, dB, dC -&gt; about 768 MiB total
+</code></pre>
+<p>The host allocation contains four arrays:</p>
+<pre><code class="language-text">hA, hB, hC_gpu, hC_cpu -&gt; about 1 GiB total
+</code></pre>
+<p>The launch configuration is:</p>
+<pre><code class="language-cpp">blockSize = 256;
+gridSize = 65536;
+</code></pre>
+<p>This launches:</p>
+<pre><code class="language-text">65,536 blocks * 256 threads/block = 16,777,216 threads
+</code></pre>
+<p>So in the current experiment, there is roughly one thread per logical element. Although the kernel is written as a grid-stride loop, most threads typically execute the loop body only once under this launch configuration.</p>
+<h3>Benchmark Method</h3>
+<p>The benchmark uses 5 warmup iterations:</p>
+<pre><code class="language-cpp">warmupIters = 5;
+</code></pre>
+<p>Warmup reduces the effect of:</p>
+<ul>
+<li>Initial CUDA context behavior.</li>
+<li>Cold instruction/cache effects.</li>
+<li>GPU clock ramp-up.</li>
+<li>First-launch overhead.</li>
+</ul>
+<p>The timed benchmark uses 20 iterations:</p>
+<pre><code class="language-cpp">iters = 20;
+</code></pre>
+<p>It measures GPU kernel time using CUDA events:</p>
+<pre><code class="language-cpp">cudaEventRecord(start);
+
+for (int i = 0; i &lt; iters; ++i) {
+    vectorAddStrided&lt;&lt;&lt;gridSize, blockSize&gt;&gt;&gt;(...);
+}
+
+cudaEventRecord(stop);
+cudaEventSynchronize(stop);
+cudaEventElapsedTime(&amp;ms, start, stop);
+</code></pre>
+<p>The reported latency is:</p>
+<pre><code class="language-text">average kernel latency = total CUDA-event time / iters
+</code></pre>
+<p>CUDA events are more appropriate than CPU timers for this measurement because they record time on the GPU execution timeline.</p>
+<h3>Effective Bandwidth Calculation</h3>
+<p>The notebook computes:</p>
+<pre><code class="language-cpp">double bytes_total = (double)N * 3.0 * sizeof(float);
+</code></pre>
+<p>Each logical element contributes:</p>
+<pre><code class="language-text">read A: 4 bytes
+read B: 4 bytes
+write C: 4 bytes
+</code></pre>
+<p>Therefore:</p>
+<pre><code class="language-text">useful bytes = N * 12
+</code></pre>
+<p>The bandwidth reported in the notebook is effective bandwidth:</p>
+<pre><code class="language-text">effective bandwidth = useful bytes / kernel time
+</code></pre>
+<p>This is not necessarily the actual DRAM traffic. For <code>stride = 2</code> and <code>stride = 4</code>, poor transaction utilization means the GPU may fetch or transfer significantly more physical data than <code>N * 12</code> bytes. The falling effective bandwidth captures the fact that the same useful work takes longer to complete.</p>
+<h3>Experimental Results</h3>
+<p>Notebook output:</p>
+<pre><code class="language-text">N = 16,777,216
+allocCount = 67,108,864
+blockSize = 256
+gridSize = 65,536
+</code></pre>
+<table>
+<thead>
+<tr>
+<th align="right">Memory stride</th>
+<th align="right">Kernel time</th>
+<th align="right">Effective bandwidth</th>
+<th>Correctness</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1</td>
+<td align="right">0.7965 ms</td>
+<td align="right">252.78 GB/s</td>
+<td>PASS</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">1.9959 ms</td>
+<td align="right">100.87 GB/s</td>
+<td>PASS</td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td align="right">4.1621 ms</td>
+<td align="right">48.37 GB/s</td>
+<td>PASS</td>
+</tr>
+</tbody></table>
+<p>The result shows a large performance gap caused only by memory-access pattern:</p>
+<table>
+<thead>
+<tr>
+<th>Comparison</th>
+<th align="right">Latency increase</th>
+<th align="right">Bandwidth change</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>stride 1 -&gt; stride 2</code></td>
+<td align="right">2.51x slower</td>
+<td align="right">252.78 -&gt; 100.87 GB/s, about 60.1% lower</td>
+<td>Skipping every other float reduces cache-line and memory-sector utilization.</td>
+</tr>
+<tr>
+<td><code>stride 1 -&gt; stride 4</code></td>
+<td align="right">5.23x slower</td>
+<td align="right">252.78 -&gt; 48.37 GB/s, about 80.9% lower</td>
+<td>The same useful data is spread across a much larger memory range, causing many more memory transactions.</td>
+</tr>
+</tbody></table>
+<p><code>stride = 4</code> is not exactly four times slower than <code>stride = 1</code>. Runtime is affected by memory-sector granularity, cache-line size, address alignment, L1/L2 behavior, request merging, store behavior, GPU clocks, outstanding memory requests, latency hiding, and measurement noise. Therefore, stride and runtime should not be treated as a strictly linear relationship.</p>
+<h3>Correctness Verification and Caveat</h3>
+<p>The CPU reference uses the same memory stride:</p>
+<pre><code class="language-cpp">for (int i = 0; i &lt; N; ++i) {
+    int idx = i * stride;
+    C[idx] = A[idx] + B[idx];
+}
+</code></pre>
+<p>The GPU and CPU outputs are compared with an absolute tolerance of <code>1e-6</code>, and the notebook reports <code>PASS</code> for all three strides.</p>
+<p>However, there is an important validation detail. For <code>stride = 4</code>, the kernel writes only:</p>
+<pre><code class="language-text">C[0], C[4], C[8], C[12], ...
+</code></pre>
+<p>but the current code uses:</p>
+<pre><code class="language-cpp">int checkCount = N;
+</code></pre>
+<p>and compares:</p>
+<pre><code class="language-text">gpu[0 ... N-1] vs cpu[0 ... N-1]
+</code></pre>
+<p>This can be weaker than intended because:</p>
+<ul>
+<li><code>dC</code> is cleared with <code>cudaMemset</code> before each test.</li>
+<li><code>hC_cpu</code> is allocated with <code>malloc</code>.</li>
+<li><code>hC_cpu</code> is not necessarily cleared before each stride test.</li>
+<li>The CPU reference only writes positions <code>i * stride</code>.</li>
+<li>Many unwritten positions may contain uninitialized values or previous results.</li>
+</ul>
+<p>Two cleaner validation methods would be:</p>
+<pre><code class="language-cpp">// Method 1: compare only positions actually written by the strided kernel.
+for (int i = 0; i &lt; N; ++i) {
+    int idx = i * stride;
+    if (fabsf(hC_gpu[idx] - hC_cpu[idx]) &gt; tol) {
+        ...
+    }
+}
+</code></pre>
+<p>or:</p>
+<pre><code class="language-cpp">// Method 2: clear both CPU and GPU output buffers before each test.
+std::memset(hC_cpu, 0, bytes);
+CUDA_CHECK(cudaMemset(dC, 0, bytes));
+
+checkClose(hC_gpu, hC_cpu, allocCount, tol);
+</code></pre>
+<p>The accurate interview explanation is:</p>
+<pre><code class="language-text">The measured outputs passed the notebook&#39;s current correctness check, although
+the validation could be improved by comparing only the strided indices or by
+initializing the full CPU output buffer before each run.
+</code></pre>
+<p>This is a useful code-review point and shows the difference between a quick benchmark and a fully rigorous validation harness.</p>
+<h3>Profiling Caveat</h3>
+<p>The notebook motivation mentions Nsight Systems, but the saved implementation currently reports CUDA-event timing and effective bandwidth only.</p>
+<p>It is more accurate to say:</p>
+<pre><code class="language-text">The notebook planned an Nsight Systems analysis, but the recorded implementation
+currently reports CUDA-event timing and effective bandwidth only.
+</code></pre>
+<p>Also, Nsight Systems is most useful for timeline-level analysis such as kernel duration, memory copies, synchronization, CPU-GPU interaction, and idle GPU periods. To directly prove that uncoalesced access increases memory transactions, Nsight Compute would be the better tool because it can expose global load/store efficiency, memory sectors, throughput, and warp stall reasons.</p>
+<h3>Key Takeaways</h3>
+<table>
+<thead>
+<tr>
+<th>Lesson</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Coalescing is a warp-level concept</td>
+<td>It is determined by the addresses accessed by neighboring threads in the same warp at the same memory instruction, not by one thread&#39;s consecutive accesses over time.</td>
+</tr>
+<tr>
+<td>Grid stride and memory stride are different</td>
+<td>Grid stride assigns logical work items to a thread; memory stride changes the physical distance between addresses accessed by neighboring threads.</td>
+</tr>
+<tr>
+<td>Vector addition is memory-bound</td>
+<td>With about <code>0.083 FLOP/byte</code>, performance is dominated by global-memory bandwidth and transaction efficiency.</td>
+</tr>
+<tr>
+<td>More threads cannot fix bad access patterns</td>
+<td>Even millions of threads cannot fully compensate for fragmented memory requests and low transaction utilization.</td>
+</tr>
+<tr>
+<td>Effective bandwidth is a useful symptom</td>
+<td>Lower effective bandwidth indicates that the same useful bytes require more time, often due to wasted memory traffic.</td>
+</tr>
+<tr>
+<td>Profiling should match the question</td>
+<td>CUDA events measure kernel time; Nsight Systems shows timelines; Nsight Compute is better for transaction-level memory diagnostics.</td>
+</tr>
+</tbody></table>
+<h2>CUDA Shared Memory and Bank Conflict</h2>
+<p><img src="../assets/projects/cuda-kernels/shared-memory-bank-conflict-overview.png" alt="CUDA shared memory bank conflicts, strided access, and padding"></p>
+<p><img src="../assets/projects/cuda-kernels/shared-memory-bank-conflict-clean-benchmark.png" alt="CUDA shared memory bank conflicts clean benchmark and padding explanation"></p>
+<p>This notebook is the next step after the Vector Addition and Memory Coalescing notebooks:</p>
+<pre><code class="language-text">Vector Addition        -&gt; thread/block/grid mapping and basic kernel workflow
+Memory Coalescing      -&gt; global-memory access pattern
+Shared Memory + Banks  -&gt; on-chip data reuse, thread cooperation, and shared-memory layout
+</code></pre>
+<p>It answers two practical CUDA questions:</p>
+<pre><code class="language-text">Why can shared memory accelerate a CUDA kernel?
+Why can shared memory still become very slow because of bank conflicts?
+</code></pre>
+<p>The notebook contains three levels of experiments:</p>
+<table>
+<thead>
+<tr>
+<th>Experiment</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Shared-memory tile copy</td>
+<td>Practice the workflow of loading from global memory into shared memory, synchronizing, and writing back.</td>
+</tr>
+<tr>
+<td>Initial bank-conflict benchmark</td>
+<td>Explore baseline, strided, and padded access modes across multiple strides.</td>
+</tr>
+<tr>
+<td>Clean 32x32 tile benchmark</td>
+<td>Compare row access, conflicted column access with <code>pitch = 32</code>, and padded column access with <code>pitch = 33</code>.</td>
+</tr>
+</tbody></table>
+<p>The clean benchmark is the most important result:</p>
+<table>
+<thead>
+<tr>
+<th>Access pattern</th>
+<th align="right">Runtime</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Row access, mostly conflict-free</td>
+<td align="right">0.2050 ms</td>
+</tr>
+<tr>
+<td>Column access, <code>pitch = 32</code></td>
+<td align="right">12.6755 ms</td>
+</tr>
+<tr>
+<td>Column access, <code>pitch = 33</code> with padding</td>
+<td align="right">0.2935 ms</td>
+</tr>
+</tbody></table>
+<p>The conflicted column access is about <code>61.8x</code> slower than the row-access baseline. Adding one column of padding reduces runtime from <code>12.6755 ms</code> to <code>0.2935 ms</code>, bringing performance close to the conflict-free baseline.</p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#motivation-why-shared-memory-matters">Motivation: Why Shared Memory Matters</a></li>
+<li><a href="#shared-memory-tile-copy">Shared-Memory Tile Copy</a></li>
+<li><a href="#what-is-a-shared-memory-bank">What Is a Shared-Memory Bank?</a></li>
+<li><a href="#why-32x32-column-access-conflicts">Why 32x32 Column Access Conflicts</a></li>
+<li><a href="#why-padding-removes-the-conflict">Why Padding Removes the Conflict</a></li>
+<li><a href="#clean-bank-conflict-benchmark">Clean Bank-Conflict Benchmark</a></li>
+<li><a href="#clean-benchmark-results">Clean Benchmark Results</a></li>
+<li><a href="#shared-memory-bank-conflicts-vs-global-memory-coalescing">Shared-Memory Bank Conflicts vs Global-Memory Coalescing</a></li>
+<li><a href="#relationship-to-matmul-tiling">Relationship to MatMul Tiling</a></li>
+<li><a href="#key-takeaways-2">Key Takeaways</a></li>
+</ul>
+<h3>Motivation: Why Shared Memory Matters</h3>
+<p>Global memory is large and visible to all blocks, but it has much higher latency than registers and on-chip storage. When a kernel repeatedly loads the same values from global memory, such as in matrix multiplication:</p>
+<pre><code class="language-text">C[i, j] = sum_k A[i, k] * B[k, j]
+</code></pre>
+<p>the same <code>A</code> and <code>B</code> elements may be reused by multiple threads. Without tiling, this can cause:</p>
+<ul>
+<li>Excessive global-memory traffic.</li>
+<li>Higher memory latency.</li>
+<li>Lower arithmetic intensity.</li>
+<li>Stronger memory-bound behavior.</li>
+</ul>
+<p>Shared memory helps by loading a tile from global memory into on-chip memory once, then allowing threads in the same block to reuse that tile. The key value of shared memory is therefore not simply &quot;copying data into a faster memory&quot;, but enabling <strong>data reuse</strong>.</p>
+<p>Shared memory has several important properties:</p>
+<ul>
+<li>It is located on chip.</li>
+<li>It is visible to all threads in the same block.</li>
+<li>It is not directly shared across different blocks.</li>
+<li>Its lifetime is tied to the thread block.</li>
+<li>It is explicitly managed by the programmer.</li>
+<li>Its capacity is limited.</li>
+<li>Its latency is much lower than global memory when accessed efficiently.</li>
+</ul>
+<p>It is commonly used in MatMul tiling, reductions, convolution, LayerNorm, Softmax, attention, transpose, and prefix-sum kernels.</p>
+<h3>Shared-Memory Tile Copy</h3>
+<p>The first experiment implements a simple tile-copy kernel:</p>
+<pre><code class="language-text">Global memory
+      ↓
+Shared-memory tile
+      ↓
+Block synchronization
+      ↓
+Global memory
+</code></pre>
+<p>The core kernel is:</p>
+<pre><code class="language-cpp">__global__ void tileCopyShared(
+    const float* __restrict__ A,
+    float* __restrict__ B,
+    int N
+) {
+    extern __shared__ float tile[];
+
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = threadIdx.x;
+
+    if (tid &lt; N) {
+        tile[tid] = A[gid];
+    }
+
+    __syncthreads();
+
+    if (gid &lt; N) {
+        B[gid] = tile[tid];
+    }
+}
+</code></pre>
+<p>Here:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>gid</code></td>
+<td>Global index across the whole grid.</td>
+</tr>
+<tr>
+<td><code>tid</code></td>
+<td>Local thread index within the block.</td>
+</tr>
+<tr>
+<td><code>tile[tid]</code></td>
+<td>Block-local shared-memory location.</td>
+</tr>
+</tbody></table>
+<p>The kernel uses dynamic shared memory:</p>
+<pre><code class="language-cpp">extern __shared__ float tile[];
+</code></pre>
+<p>The shared-memory size is provided at kernel launch:</p>
+<pre><code class="language-cpp">size_t sharedMemBytes = blockSize * sizeof(float);
+
+tileCopyShared&lt;&lt;&lt;gridSize, blockSize, sharedMemBytes&gt;&gt;&gt;(dA, dB, N);
+</code></pre>
+<p>With <code>blockSize = 256</code>, each block uses:</p>
+<pre><code class="language-text">256 floats * 4 bytes = 1024 bytes = 1 KiB
+</code></pre>
+<h3>Why <code>__syncthreads()</code> Is Used</h3>
+<p><code>__syncthreads()</code> is a block-level barrier. It guarantees that:</p>
+<ul>
+<li>All threads in the block reach the barrier.</li>
+<li>Shared-memory writes before the barrier are visible to other threads in the block.</li>
+<li>No thread continues past the barrier until all threads in the block arrive.</li>
+</ul>
+<p>In this tile-copy kernel, each thread writes <code>tile[tid]</code> and later reads the same <code>tile[tid]</code>. There is no cross-thread reuse in this exact mapping, so the barrier is not essential for this specific data dependency.</p>
+<p>However, the experiment includes <code>__syncthreads()</code> to practice the more general shared-memory pattern used in kernels such as transpose:</p>
+<pre><code class="language-cpp">tile[threadIdx.y][threadIdx.x] = input[...];
+
+__syncthreads();
+
+output[...] = tile[threadIdx.x][threadIdx.y];
+</code></pre>
+<p>In that case, a thread may read data written by another thread, so synchronization is required.</p>
+<h3>Boundary Check Caveat in the Tile-Copy Kernel</h3>
+<p>The tile-copy kernel currently uses:</p>
+<pre><code class="language-cpp">if (tid &lt; N) {
+    tile[tid] = A[gid];
+}
+</code></pre>
+<p>This condition is not the right boundary check. <code>tid</code> is only the local thread index:</p>
+<pre><code class="language-text">0 &lt;= tid &lt; blockDim.x
+</code></pre>
+<p>With <code>blockDim.x = 256</code> and <code>N = 2^24</code>, <code>tid &lt; N</code> is always true. The load should be guarded by the global index:</p>
+<pre><code class="language-cpp">if (gid &lt; N) {
+    tile[tid] = A[gid];
+}
+
+__syncthreads();
+
+if (gid &lt; N) {
+    B[gid] = tile[tid];
+}
+</code></pre>
+<p>The current experiment still prints <code>Correctness: PASS</code> because <code>N = 2^24</code> is divisible by <code>256</code>, so the final block has no extra out-of-range threads. This is still an important code-review point:</p>
+<pre><code class="language-text">The kernel passes for the current input size, but the load-side boundary check
+should use the global index rather than the local thread index.
+</code></pre>
+<h3>Is Shared-Memory Copy Faster Than Direct Copy?</h3>
+<p>Not necessarily. A direct copy is:</p>
+<pre><code class="language-cpp">B[gid] = A[gid];
+</code></pre>
+<p>It requires one global load and one global store. The shared-memory copy requires:</p>
+<ul>
+<li>One global load.</li>
+<li>One shared-memory store.</li>
+<li>One barrier.</li>
+<li>One shared-memory load.</li>
+<li>One global store.</li>
+</ul>
+<p>It does not reduce global-memory traffic and does not create data reuse. Therefore, in this experiment shared memory is mainly a teaching tool, not a performance optimization.</p>
+<p>The accurate lesson is:</p>
+<pre><code class="language-text">Shared memory improves performance when data loaded from global memory is reused
+by multiple operations or threads. Using shared memory only as a pass-through
+buffer usually adds overhead instead of improving performance.
+</code></pre>
+<h3>What Is a Shared-Memory Bank?</h3>
+<p>Shared memory is fast, but it is not a single uniform memory array with unlimited ports. On a typical NVIDIA GPU, shared memory is divided into 32 banks, and a warp usually contains 32 threads.</p>
+<p>If the 32 threads in a warp access 32 different banks, the accesses can proceed in parallel. If multiple threads access the same bank but different addresses, a <strong>bank conflict</strong> occurs. These accesses must be split or serialized, increasing latency and reducing effective shared-memory bandwidth.</p>
+<p><img src="../assets/projects/cuda-kernels/shared-memory-bank-mapping.png" alt="Shared-memory bank mapping"></p>
+<p>For 4-byte <code>float</code> data, a common simplified model is:</p>
+<pre><code class="language-text">bank = (byte_address / 4) mod 32
+</code></pre>
+<p>If the array starts at an aligned address, this is approximately:</p>
+<pre><code class="language-text">bank = index mod 32
+</code></pre>
+<p>Examples:</p>
+<pre><code class="language-text">shared[0]  -&gt; bank 0
+shared[1]  -&gt; bank 1
+shared[2]  -&gt; bank 2
+...
+shared[31] -&gt; bank 31
+shared[32] -&gt; bank 0
+shared[33] -&gt; bank 1
+</code></pre>
+<p>Conflict-free access:</p>
+<pre><code class="language-text">Thread 0  -&gt; shared[0]  -&gt; bank 0
+Thread 1  -&gt; shared[1]  -&gt; bank 1
+...
+Thread 31 -&gt; shared[31] -&gt; bank 31
+</code></pre>
+<p>Each thread accesses a different bank, so there is no bank conflict.</p>
+<p>With stride 2:</p>
+<pre><code class="language-text">bank = (2 * t) mod 32
+</code></pre>
+<p>threads <code>0</code> and <code>16</code> map to the same bank, threads <code>1</code> and <code>17</code> map to the same bank, and so on. This commonly forms a 2-way bank conflict.</p>
+<p>With stride 4:</p>
+<pre><code class="language-text">bank = (4 * t) mod 32
+</code></pre>
+<p>threads <code>0</code>, <code>8</code>, <code>16</code>, and <code>24</code> map to the same bank, creating a 4-way conflict.</p>
+<p>With stride 32:</p>
+<pre><code class="language-text">bank = (32 * t) mod 32 = 0
+</code></pre>
+<p>all threads map to bank 0. If they access different addresses in that bank, this forms the most severe 32-way bank conflict.</p>
+<p>One important exception is broadcast behavior: if multiple threads read the exact same shared-memory address, the hardware may broadcast the value instead of treating it as a normal conflict. Bank-conflict analysis must consider bank mapping, whether addresses are identical or different, read vs write behavior, and the GPU architecture.</p>
+<h3>Why 32x32 Column Access Conflicts</h3>
+<p>The clean experiment uses a 2D shared-memory tile. Without padding:</p>
+<pre><code class="language-cpp">pitch = 32;
+idx = row * pitch + col;
+</code></pre>
+<p>For row access:</p>
+<pre><code class="language-cpp">idx = ty * pitch + tx;
+</code></pre>
+<p>Within a warp, <code>ty</code> is usually fixed and <code>tx = 0...31</code>, so the accessed indices are:</p>
+<pre><code class="language-text">row * 32 + 0
+row * 32 + 1
+...
+row * 32 + 31
+</code></pre>
+<p>The bank mapping is:</p>
+<pre><code class="language-text">bank = (row * 32 + tx) mod 32 = tx
+</code></pre>
+<p>The 32 threads access 32 different banks, so the access is mostly conflict-free.</p>
+<p>For column access:</p>
+<pre><code class="language-cpp">idx = tx * pitch + col;
+</code></pre>
+<p>With <code>pitch = 32</code>:</p>
+<pre><code class="language-text">idx = tx * 32 + col
+bank = (tx * 32 + col) mod 32
+</code></pre>
+<p>Since <code>tx * 32 mod 32 = 0</code>, every thread maps to:</p>
+<pre><code class="language-text">bank = col
+</code></pre>
+<p>The warp accesses:</p>
+<pre><code class="language-text">Thread 0  -&gt; shared[0][col]
+Thread 1  -&gt; shared[1][col]
+Thread 2  -&gt; shared[2][col]
+...
+Thread 31 -&gt; shared[31][col]
+</code></pre>
+<p>These are different addresses, but they all map to the same bank, forming a classic 32-way bank conflict.</p>
+<h3>Why Padding Removes the Conflict</h3>
+<p>The padded version changes the pitch from 32 to 33:</p>
+<pre><code class="language-cpp">float tile[32][33];
+</code></pre>
+<p>or, with dynamic shared memory:</p>
+<pre><code class="language-cpp">pitch = TILE + 1;
+</code></pre>
+<p>Now column access is:</p>
+<pre><code class="language-text">idx = tx * 33 + col
+bank = (tx * 33 + col) mod 32
+</code></pre>
+<p>Because <code>33 mod 32 = 1</code>:</p>
+<pre><code class="language-text">bank = (tx + col) mod 32
+</code></pre>
+<p>As <code>tx</code> goes from <code>0</code> to <code>31</code>, the access spreads across all 32 banks:</p>
+<pre><code class="language-text">Thread 0 -&gt; bank col
+Thread 1 -&gt; bank col + 1
+Thread 2 -&gt; bank col + 2
+...
+</code></pre>
+<p>Padding changes the row pitch so that successive rows no longer start in the same bank. It does not change the algorithm or reduce the number of shared-memory accesses; it changes the layout so that the same warp-level access pattern maps to different banks.</p>
+<h3>Clean Bank-Conflict Benchmark</h3>
+<p>The final clean benchmark uses:</p>
+<pre><code class="language-cpp">dim3 block(32, 8);
+dim3 grid(256);
+</code></pre>
+<p>Each block has:</p>
+<pre><code class="language-text">32 * 8 = 256 threads
+</code></pre>
+<p>The largest shared-memory tile is:</p>
+<pre><code class="language-text">32 * 33 floats = 4224 bytes = about 4.12 KiB
+</code></pre>
+<p>Each kernel repeats the shared-memory access:</p>
+<pre><code class="language-cpp">iters = 4096;
+</code></pre>
+<p>The benchmark uses:</p>
+<pre><code class="language-text">warmup = 5
+runs = 20
+</code></pre>
+<p>and measures average kernel latency with CUDA events.</p>
+<p>The benchmark compares three modes:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Access pattern</th>
+<th>Expected behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mode 0</td>
+<td>Row access: <code>idx = ty * pitch + tx</code></td>
+<td>Threads in a warp access consecutive elements and different banks.</td>
+</tr>
+<tr>
+<td>Mode 1</td>
+<td>Column access, <code>pitch = 32</code>: <code>idx = tx * 32 + col</code></td>
+<td>Threads in a warp map to the same bank, causing severe 32-way conflict.</td>
+</tr>
+<tr>
+<td>Mode 2</td>
+<td>Column access, <code>pitch = 33</code>: <code>idx = tx * 33 + col</code></td>
+<td>Padding shifts row starts across banks and removes the main conflict.</td>
+</tr>
+</tbody></table>
+<h3>Clean Benchmark Results</h3>
+<p>Notebook output:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th align="right">Runtime</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Row access, no major conflict</td>
+<td align="right">0.2050 ms</td>
+<td>Conflict-free baseline.</td>
+</tr>
+<tr>
+<td>Column access, <code>pitch = 32</code></td>
+<td align="right">12.6755 ms</td>
+<td>Severe 32-way bank conflict.</td>
+</tr>
+<tr>
+<td>Column access, <code>pitch = 33</code></td>
+<td align="right">0.2935 ms</td>
+<td>Padding removes the catastrophic conflict penalty.</td>
+</tr>
+</tbody></table>
+<p>The conflicted column access is:</p>
+<pre><code class="language-text">12.6755 / 0.2050 = 61.83x slower
+</code></pre>
+<p>This is larger than a simple 32-way serialization estimate, which shows that runtime is affected by more than a simplified conflict degree. Other factors can include instruction scheduling, loop dependencies, compiler-generated instructions, warp scheduling, pipeline utilization, shared-memory replay behavior, address calculation, and the measurement configuration.</p>
+<p>The padded version is:</p>
+<pre><code class="language-text">12.6755 / 0.2935 = 43.19x faster than the conflicted version
+</code></pre>
+<p>Compared with the row baseline:</p>
+<pre><code class="language-text">0.2935 / 0.2050 = 1.43x slower
+</code></pre>
+<p>This is reasonable because row access and padded column access still have different index calculations and instruction paths. The conclusion is not that padded access is exactly as fast as row access. The correct conclusion is:</p>
+<pre><code class="language-text">Padding removes the catastrophic bank-conflict penalty and restores performance
+close to the conflict-free baseline.
+</code></pre>
+<h3>Why the Initial Bank-Conflict Benchmark Was Less Clean</h3>
+<p>The notebook also contains an earlier bank-conflict benchmark with outputs such as:</p>
+<pre><code class="language-text">stride 1 baseline: 1.4614 ms
+stride 1 strided:  1.5553 ms
+stride 1 padded:   5.3495 ms
+</code></pre>
+<p>That experiment is useful for exploration, but its modes do not perform equivalent work. For example, the padded mode uses different branch behavior, address calculation, active-thread count, data layout, and per-block work. Because the work is not identical across modes, the absolute runtimes cannot cleanly prove that padding restores performance.</p>
+<p>The later <code>bank_conflict_clean.cu</code> experiment provides the more reliable comparison and should be the main result used in an interview.</p>
+<h3>Shared-Memory Bank Conflicts vs Global-Memory Coalescing</h3>
+<p>These two ideas are related but different:</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>What it optimizes</th>
+<th>Main question</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Global-memory coalescing</td>
+<td>How warp requests are grouped into global-memory transactions.</td>
+<td>Are neighboring threads accessing contiguous and aligned global addresses?</td>
+</tr>
+<tr>
+<td>Shared-memory bank-conflict avoidance</td>
+<td>How warp requests are distributed across shared-memory banks.</td>
+<td>Are neighboring threads mapping to different shared-memory banks?</td>
+</tr>
+</tbody></table>
+<p>In one sentence:</p>
+<pre><code class="language-text">Coalescing optimizes how warp requests are grouped for global memory, while
+bank-conflict avoidance optimizes how warp requests are distributed across
+shared-memory banks.
+</code></pre>
+<h3>Relationship to Matrix Transpose</h3>
+<p>Bank conflict is classically illustrated by tiled matrix transpose:</p>
+<pre><code class="language-cpp">__shared__ float tile[32][32];
+</code></pre>
+<p>Global-memory load:</p>
+<pre><code class="language-cpp">tile[threadIdx.y][threadIdx.x] = input[...];
+</code></pre>
+<p>This is usually row-wise:</p>
+<ul>
+<li>Global load is coalesced.</li>
+<li>Shared-memory write is conflict-free.</li>
+</ul>
+<p>But transpose read:</p>
+<pre><code class="language-cpp">tile[threadIdx.x][threadIdx.y]
+</code></pre>
+<p>becomes column access. With row pitch 32, the access can map all threads to the same bank. The standard fix is:</p>
+<pre><code class="language-cpp">__shared__ float tile[32][33];
+</code></pre>
+<p>This is exactly what the clean benchmark simulates.</p>
+<h3>Relationship to MatMul Tiling</h3>
+<p>Shared memory improves matrix multiplication when data is reused by multiple threads, but the layout matters. A tile size such as 32 can create bank conflicts when consecutive threads access shared-memory addresses separated by 32 banks. Padding the shared-memory tile changes the stride and avoids conflict-heavy access.</p>
+<p><img src="../assets/projects/cuda-kernels/matmul-bank-conflict.png" alt="MatMul bank conflict"></p>
+<h3>Shared Memory and Occupancy Trade-off</h3>
+<p>Shared memory is not always better, and using more shared memory is not always better. Each SM has limited shared-memory capacity. If each block uses more shared memory, fewer blocks may be resident on the same SM.</p>
+<p>For example, if an SM has 64 KiB available for blocks:</p>
+<table>
+<thead>
+<tr>
+<th align="right">Shared memory per block</th>
+<th>Possible effect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">8 KiB</td>
+<td>More blocks can be resident.</td>
+</tr>
+<tr>
+<td align="right">32 KiB</td>
+<td>Fewer blocks can be resident.</td>
+</tr>
+<tr>
+<td align="right">64 KiB</td>
+<td>Potentially only one block can be resident.</td>
+</tr>
+</tbody></table>
+<p>Shared-memory tiling must balance:</p>
+<ul>
+<li>Tile size.</li>
+<li>Data reuse.</li>
+<li>Shared-memory usage.</li>
+<li>Registers per thread.</li>
+<li>Resident blocks per SM.</li>
+<li>Active warps.</li>
+<li>Occupancy.</li>
+<li>Synchronization overhead.</li>
+</ul>
+<p>The accurate trade-off is:</p>
+<pre><code class="language-text">Larger tiles may improve data reuse, but they also consume more shared memory
+and can reduce occupancy.
+</code></pre>
+<h3>Key Takeaways</h3>
+<table>
+<thead>
+<tr>
+<th>Lesson</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Shared memory helps through reuse</td>
+<td>It is useful when data loaded from global memory is reused by multiple operations or threads.</td>
+</tr>
+<tr>
+<td>Shared memory is not automatically faster</td>
+<td>A pass-through shared-memory copy can add overhead without reducing global-memory traffic.</td>
+</tr>
+<tr>
+<td>Bank conflicts are warp-level layout problems</td>
+<td>They depend on how threads in the same warp map their shared-memory addresses to banks.</td>
+</tr>
+<tr>
+<td>Padding changes bank mapping</td>
+<td>Changing pitch from 32 to 33 shifts row starts across banks and removes the classic column-access conflict.</td>
+</tr>
+<tr>
+<td>Clean microbenchmarks matter</td>
+<td>To prove a layout optimization, each benchmark mode should perform comparable work.</td>
+</tr>
+<tr>
+<td>Occupancy still matters</td>
+<td>Larger shared-memory tiles can improve reuse but reduce resident blocks and active warps.</td>
+</tr>
+</tbody></table>
+<h2>CUDA Warp-Level Reduction</h2>
+<p><img src="../assets/projects/cuda-kernels/warp-level-reduction-overview.png" alt="CUDA warp-level reduction with shuffle and block reduction"></p>
+<p>This notebook is the next CUDA fundamentals experiment after Vector Addition, Memory Coalescing, and Shared Memory Bank Conflict:</p>
+<pre><code class="language-text">Vector Addition              -&gt; thread/block/grid mapping and basic kernel workflow
+Memory Coalescing            -&gt; global-memory access pattern
+Shared Memory + Bank Conflict -&gt; block-level data sharing and shared-memory layout
+Warp-Level Reduction         -&gt; warp-level thread communication and efficient parallel reduction
+</code></pre>
+<p>It answers two core questions:</p>
+<pre><code class="language-text">How can a large array be reduced into one result in parallel?
+Why is __shfl_down_sync often more efficient than a reduction implemented entirely through shared memory?
+</code></pre>
+<p>The notebook implements a hierarchical sum reduction:</p>
+<pre><code class="language-text">Each thread accumulates several input elements
+                    ↓
+Each warp performs a shuffle reduction
+                    ↓
+Lane 0 of each warp writes one partial sum to shared memory
+                    ↓
+The first warp reduces all warp partial sums
+                    ↓
+Each block writes one partial sum
+                    ↓
+CPU performs the final reduction across blocks
+</code></pre>
+<p><img src="../assets/projects/cuda-kernels/warp-level-reduction-tree.png" alt="Reduction tree"></p>
+<p>The experiment processes:</p>
+<pre><code class="language-text">N = 2^20 = 1,048,576 float elements
+</code></pre>
+<p>and reports:</p>
+<pre><code class="language-text">GPU sum = 523641.625000
+CPU sum = 523641.625000
+Correctness: PASS
+</code></pre>
+<p>This validates that the hierarchical warp/block reduction matches the CPU reference for the tested input.</p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#motivation-reduction-is-a-core-ml-operation">Motivation: Reduction Is a Core ML Operation</a></li>
+<li><a href="#why-not-let-every-thread-write-the-same-output">Why Not Let Every Thread Write the Same Output?</a></li>
+<li><a href="#why-use-warp-level-shuffle">Why Use Warp-Level Shuffle?</a></li>
+<li><a href="#what-is-a-warp">What Is a Warp?</a></li>
+<li><a href="#what-__shfl_down_sync-does">What <code>__shfl_down_sync</code> Does</a></li>
+<li><a href="#warp-reduction-function">Warp Reduction Function</a></li>
+<li><a href="#interview-friendly-8-lane-example">Interview-Friendly 8-Lane Example</a></li>
+<li><a href="#kernel-layer-1-thread-local-accumulation">Kernel Layer 1: Thread-Local Accumulation</a></li>
+<li><a href="#kernel-layer-2-warp-level-reduction">Kernel Layer 2: Warp-Level Reduction</a></li>
+<li><a href="#kernel-layer-3-first-warp-performs-block-reduction">Kernel Layer 3: First Warp Performs Block Reduction</a></li>
+<li><a href="#complete-reduction-hierarchy">Complete Reduction Hierarchy</a></li>
+<li><a href="#experiment-configuration">Experiment Configuration</a></li>
+<li><a href="#correctness-verification">Correctness Verification</a></li>
+<li><a href="#key-takeaways-3">Key Takeaways</a></li>
+</ul>
+<h3>Motivation: Reduction Is a Core ML Operation</h3>
+<p>Reduction combines many values into fewer values, often one final result. Common reductions include:</p>
+<ul>
+<li>Sum.</li>
+<li>Maximum.</li>
+<li>Minimum.</li>
+<li>Mean.</li>
+<li>Variance.</li>
+<li>Logical AND/OR.</li>
+</ul>
+<p>For a sum reduction:</p>
+<pre><code class="language-text">S = sum_i x[i]
+</code></pre>
+<p>Reduction appears throughout ML workloads:</p>
+<table>
+<thead>
+<tr>
+<th>Workload component</th>
+<th>Reduction pattern</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Loss calculation</td>
+<td>Sum or mean over examples/tokens.</td>
+</tr>
+<tr>
+<td>Dot product</td>
+<td>Sum of elementwise products.</td>
+</tr>
+<tr>
+<td>LayerNorm</td>
+<td>Mean and variance reductions.</td>
+</tr>
+<tr>
+<td>BatchNorm</td>
+<td>Batch statistics.</td>
+</tr>
+<tr>
+<td>Softmax</td>
+<td>Maximum reduction and exponential-sum reduction.</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>Score normalization and row-wise reductions.</td>
+</tr>
+<tr>
+<td>Gradient clipping</td>
+<td>Gradient norm reduction.</td>
+</tr>
+<tr>
+<td>Global pooling</td>
+<td>Reduce spatial or sequence dimensions.</td>
+</tr>
+</tbody></table>
+<p>Reduction is therefore not an isolated CUDA trick; it is a building block for many high-performance ML kernels.</p>
+<h3>Why Not Let Every Thread Write the Same Output?</h3>
+<p>The most direct but incorrect idea is:</p>
+<pre><code class="language-cpp">out[0] += in[idx];
+</code></pre>
+<p>If many threads execute this at the same time, a data race occurs:</p>
+<ul>
+<li>Multiple threads read the old value.</li>
+<li>Multiple threads compute their own updates.</li>
+<li>Multiple threads write to the same address.</li>
+<li>Some updates are lost.</li>
+</ul>
+<p>One possible fix is:</p>
+<pre><code class="language-cpp">atomicAdd(out, value);
+</code></pre>
+<p>However, if every thread performs an atomic add to the same global-memory address, the kernel suffers heavy contention and serialization. A more efficient reduction usually uses a hierarchy:</p>
+<ol>
+<li>Each thread accumulates several elements in registers.</li>
+<li>Each warp reduces its thread-local values.</li>
+<li>Each block combines the warp results.</li>
+<li>The grid combines block-level partial sums.</li>
+</ol>
+<p>This greatly reduces global atomic operations and global-memory writes.</p>
+<h3>Why Use Warp-Level Shuffle?</h3>
+<p>A traditional block reduction often uses shared memory:</p>
+<pre><code class="language-cpp">shared[tid] = value;
+__syncthreads();
+
+shared[tid] += shared[tid + offset];
+__syncthreads();
+</code></pre>
+<p>This works, but it requires:</p>
+<ul>
+<li>Shared-memory stores.</li>
+<li>Shared-memory loads.</li>
+<li>Multiple <code>__syncthreads()</code> barriers.</li>
+<li>Repeated shared-memory indexing.</li>
+</ul>
+<p>Warp-level shuffle allows one thread to directly read another lane&#39;s register value inside the same warp:</p>
+<pre><code class="language-cpp">__shfl_down_sync(mask, value, offset);
+</code></pre>
+<p>The advantages are:</p>
+<ul>
+<li>Intermediate values do not need to be written to shared memory at every step.</li>
+<li>Block-level synchronization is not needed inside each warp-level reduction step.</li>
+<li>Data moves through the warp shuffle network between registers.</li>
+<li>A 32-lane warp reduction takes only <code>log2(32) = 5</code> shuffle steps.</li>
+</ul>
+<p>The core motivation is:</p>
+<pre><code class="language-text">Replace repeated shared-memory communication with register-level warp communication.
+</code></pre>
+<h3>What Is a Warp?</h3>
+<p>On NVIDIA GPUs, a warp usually contains 32 threads. The threads in a warp are called lanes:</p>
+<pre><code class="language-text">lane 0, lane 1, lane 2, ..., lane 31
+</code></pre>
+<p>A 256-thread block contains:</p>
+<pre><code class="language-text">256 / 32 = 8 warps
+</code></pre>
+<p>The code computes lane and warp IDs with:</p>
+<pre><code class="language-cpp">int lane = tid &amp; 31;
+int warp = tid &gt;&gt; 5;
+</code></pre>
+<p>These bit operations are efficient forms of:</p>
+<pre><code class="language-text">lane = tid % 32
+warp = floor(tid / 32)
+</code></pre>
+<p>because 32 is a power of two.</p>
+<h3>What <code>__shfl_down_sync</code> Does</h3>
+<p>The core primitive is:</p>
+<pre><code class="language-cpp">__shfl_down_sync(mask, val, offset);
+</code></pre>
+<p>It lets the current lane read the <code>val</code> register from:</p>
+<pre><code class="language-text">lane + offset
+</code></pre>
+<p>For example:</p>
+<pre><code class="language-cpp">float other = __shfl_down_sync(mask, val, 16);
+</code></pre>
+<p>means:</p>
+<pre><code class="language-text">Lane 0 reads lane 16
+Lane 1 reads lane 17
+Lane 2 reads lane 18
+...
+Lane 15 reads lane 31
+</code></pre>
+<p>For lanes 16-31, the source lane would be outside the warp, so those returned values should not be used as valid reduction results. In a downward shuffle reduction, only lower lanes keep meaningful partial sums, and the complete result is eventually guaranteed only in lane 0.</p>
+<h3>The Mask Argument</h3>
+<p>The notebook uses:</p>
+<pre><code class="language-cpp">unsigned mask = __activemask();
+</code></pre>
+<p>The mask indicates which lanes are active participants in the warp primitive. A full warp is often represented as:</p>
+<pre><code class="language-cpp">0xffffffff
+</code></pre>
+<p>or 32 bits set to 1.</p>
+<p><code>__activemask()</code> returns the active-lane mask for threads executing the current instruction. The mask is not just metadata; it defines which lanes must participate together in the shuffle operation. Threads named in the mask should execute the same warp primitive consistently.</p>
+<p>In this notebook, the block size is 256 threads, so all warps are full 32-thread warps and mask handling is relatively simple.</p>
+<h3>Warp Reduction Function</h3>
+<p>The core device function is:</p>
+<pre><code class="language-cpp">__device__ __forceinline__
+float warpReduceSum(float val) {
+    unsigned mask = __activemask();
+
+    for (int offset = 16; offset &gt; 0; offset &gt;&gt;= 1) {
+        val += __shfl_down_sync(mask, val, offset);
+    }
+
+    return val;
+}
+</code></pre>
+<p>The offsets are:</p>
+<pre><code class="language-text">16, 8, 4, 2, 1
+</code></pre>
+<p>This forms a tree reduction.</p>
+<h3>Interview-Friendly 8-Lane Example</h3>
+<p>For an easier explanation, imagine a warp has only 8 lanes:</p>
+<pre><code class="language-text">Lane:   0  1  2  3  4  5  6  7
+Value:  1  2  3  4  5  6  7  8
+</code></pre>
+<p>The goal is:</p>
+<pre><code class="language-text">1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 = 36
+</code></pre>
+<p>Step 1, <code>offset = 4</code>:</p>
+<pre><code class="language-text">Lane 0: 1 + 5 = 6
+Lane 1: 2 + 6 = 8
+Lane 2: 3 + 7 = 10
+Lane 3: 4 + 8 = 12
+</code></pre>
+<p>Effective state:</p>
+<pre><code class="language-text">6, 8, 10, 12
+</code></pre>
+<p>Step 2, <code>offset = 2</code>:</p>
+<pre><code class="language-text">Lane 0: 6 + 10 = 16
+Lane 1: 8 + 12 = 20
+</code></pre>
+<p>Effective state:</p>
+<pre><code class="language-text">16, 20
+</code></pre>
+<p>Step 3, <code>offset = 1</code>:</p>
+<pre><code class="language-text">Lane 0: 16 + 20 = 36
+</code></pre>
+<p>Only lane 0 has the complete reduction result. An 8-lane reduction needs <code>log2(8) = 3</code> steps; a real 32-lane warp reduction needs <code>log2(32) = 5</code> steps.</p>
+<h3>Kernel Layer 1: Thread-Local Accumulation</h3>
+<p>The kernel first computes:</p>
+<pre><code class="language-cpp">int idx = blockIdx.x * blockDim.x + threadIdx.x;
+int stride = blockDim.x * gridDim.x;
+</code></pre>
+<p>and then performs a grid-stride loop:</p>
+<pre><code class="language-cpp">for (int i = idx; i &lt; N; i += stride) {
+    sum += in[i];
+}
+</code></pre>
+<p>Each thread accumulates several input elements into a register variable <code>sum</code>. This has several benefits:</p>
+<ul>
+<li>One thread can process multiple input elements.</li>
+<li>The launch configuration can be decoupled from the input size.</li>
+<li>The reduction later needs to combine fewer values.</li>
+<li>Thread-local partial sums live in registers.</li>
+<li>Neighboring threads still access neighboring addresses during each loop iteration, preserving coalesced global loads.</li>
+</ul>
+<p>In the current notebook configuration:</p>
+<pre><code class="language-text">N = 1,048,576
+blockSize = 256
+gridSize = 4096
+total threads = 4096 * 256 = 1,048,576
+</code></pre>
+<p>The total thread count equals <code>N</code>, so each thread mostly reads one element. The code supports grid-stride reuse, but the current launch configuration does not strongly demonstrate multi-element accumulation per thread.</p>
+<p>A clearer demonstration would use a fixed grid:</p>
+<pre><code class="language-cpp">gridSize = 256;
+blockSize = 256;
+</code></pre>
+<p>Then:</p>
+<pre><code class="language-text">total threads = 256 * 256 = 65,536
+average elements per thread = 1,048,576 / 65,536 = 16
+</code></pre>
+<h3>Kernel Layer 2: Warp-Level Reduction</h3>
+<p>After each thread has a local sum, the kernel runs:</p>
+<pre><code class="language-cpp">sum = warpReduceSum(sum);
+</code></pre>
+<p>This combines the 32 thread-local sums inside each warp. The full warp sum ends up in lane 0 of that warp.</p>
+<p>The code then writes one partial sum per warp:</p>
+<pre><code class="language-cpp">if (lane == 0) {
+    warpSums[warp] = sum;
+}
+</code></pre>
+<p>For a 256-thread block:</p>
+<pre><code class="language-text">256 / 32 = 8 warps
+</code></pre>
+<p>so the block writes only:</p>
+<pre><code class="language-text">warpSums[0], warpSums[1], ..., warpSums[7]
+</code></pre>
+<p>This is much less shared-memory traffic than writing every thread&#39;s value to shared memory at each reduction stage.</p>
+<h3>Why Shared Memory Is Still Needed</h3>
+<p>Warp shuffle works only inside one warp. It cannot directly let warp 0 read a register from warp 1. Cross-warp reduction therefore still needs an intermediate communication mechanism.</p>
+<p>The kernel uses:</p>
+<pre><code class="language-cpp">__shared__ float warpSums[32];
+</code></pre>
+<p>Each warp&#39;s lane 0 writes:</p>
+<pre><code class="language-cpp">warpSums[warp]
+</code></pre>
+<p>The block-level design is therefore:</p>
+<pre><code class="language-text">Warp registers
+       ↓
+Shared-memory partial sums
+       ↓
+First warp
+</code></pre>
+<p>In other words:</p>
+<pre><code class="language-text">within a warp: use shuffle
+across warps: use a small shared-memory buffer
+</code></pre>
+<h3>Why <code>__syncthreads()</code> Is Required Here</h3>
+<p>After lane 0 of each warp writes its partial sum:</p>
+<pre><code class="language-cpp">if (lane == 0) {
+    warpSums[warp] = sum;
+}
+
+__syncthreads();
+</code></pre>
+<p>the barrier guarantees:</p>
+<ul>
+<li>All warp lane-0 threads have written to <code>warpSums</code>.</li>
+<li>The first warp reads the partial sums only after all writes are visible.</li>
+</ul>
+<p>This is a real cross-warp communication point. Warp-level shuffle cannot synchronize the whole block, and warp 0 may reach the read step earlier than other warps. Without <code>__syncthreads()</code>, warp 0 could read uninitialized, old, or incomplete partial sums.</p>
+<h3>Kernel Layer 3: First Warp Performs Block Reduction</h3>
+<p>The first warp reduces the warp partial sums:</p>
+<pre><code class="language-cpp">float blockSum = 0.0f;
+
+if (warp == 0) {
+    int numWarps = (blockDim.x + 31) / 32;
+
+    blockSum = (lane &lt; numWarps)
+        ? warpSums[lane]
+        : 0.0f;
+
+    blockSum = warpReduceSum(blockSum);
+
+    if (lane == 0) {
+        out[blockIdx.x] = blockSum;
+    }
+}
+</code></pre>
+<p>For a 256-thread block, <code>numWarps = 8</code>. Therefore:</p>
+<pre><code class="language-text">Lane 0 reads warpSums[0]
+Lane 1 reads warpSums[1]
+...
+Lane 7 reads warpSums[7]
+Lane 8-31 use 0
+</code></pre>
+<p>The first warp performs another <code>warpReduceSum</code>, and <code>warp 0, lane 0</code> writes the block result:</p>
+<pre><code class="language-cpp">out[blockIdx.x] = blockSum;
+</code></pre>
+<h3>Complete Reduction Hierarchy</h3>
+<p>With a 256-thread block:</p>
+<pre><code class="language-text">Input elements
+      ↓
+256 thread-local sums
+      ↓
+8 warp-level sums
+      ↓
+8 shared-memory values
+      ↓
+1 block-level sum
+      ↓
+out[blockIdx.x]
+</code></pre>
+<p>The grid has 4096 blocks, so the GPU outputs 4096 block partial sums. The CPU then computes the final global sum:</p>
+<pre><code class="language-cpp">float gpuSum = 0.0f;
+
+for (size_t i = 0; i &lt; outCount; ++i) {
+    gpuSum += hOut[i];
+}
+</code></pre>
+<h3>Why the Final Step Runs on CPU in This Notebook</h3>
+<p>The notebook&#39;s main goal is to study warp-level and block-level reduction, so the GPU performs only the first-stage reduction. It compresses 1,048,576 input elements into 4096 block partial sums, then the CPU performs the final reduction.</p>
+<p>This keeps the code simple, verifies the first GPU reduction stage, avoids recursive kernel launches, and keeps the focus on warp shuffle.</p>
+<p>In a production implementation, the final stage would usually remain on GPU, using one of these strategies:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Idea</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Multi-stage GPU reduction</td>
+<td>Repeatedly launch kernels until only one partial sum remains.</td>
+<td>Simple and scalable, but adds kernel launches.</td>
+</tr>
+<tr>
+<td>Block-level atomic</td>
+<td>Each block calls <code>atomicAdd(globalSum, blockSum)</code>.</td>
+<td>Reduces atomics from <code>N</code> to number of blocks, but still has atomic contention.</td>
+</tr>
+<tr>
+<td>Cooperative groups / single-kernel strategy</td>
+<td>Use grid-wide synchronization with cooperative launch.</td>
+<td>More complex and has launch/hardware constraints.</td>
+</tr>
+</tbody></table>
+<h3>Experiment Configuration</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU</td>
+<td align="right">NVIDIA Tesla T4</td>
+</tr>
+<tr>
+<td>CUDA architecture</td>
+<td align="right"><code>sm_75</code></td>
+</tr>
+<tr>
+<td>Input size</td>
+<td align="right"><code>N = 1 &lt;&lt; 20 = 1,048,576</code></td>
+</tr>
+<tr>
+<td>Input values</td>
+<td align="right"><code>hIn[i] = 0.001f * (i % 1000)</code></td>
+</tr>
+<tr>
+<td>Block size</td>
+<td align="right">256 threads</td>
+</tr>
+<tr>
+<td>Grid size</td>
+<td align="right">4096 blocks</td>
+</tr>
+<tr>
+<td>Output count</td>
+<td align="right">4096 block partial sums</td>
+</tr>
+</tbody></table>
+<p>The input values repeat periodically:</p>
+<pre><code class="language-text">0.000, 0.001, 0.002, ..., 0.999, then repeat
+</code></pre>
+<h3>Correctness Verification</h3>
+<p>The CPU reference uses a double accumulator:</p>
+<pre><code class="language-cpp">static float cpuSum(const float* a, int N) {
+    double acc = 0.0;
+
+    for (int i = 0; i &lt; N; ++i) {
+        acc += a[i];
+    }
+
+    return static_cast&lt;float&gt;(acc);
+}
+</code></pre>
+<p>Using <code>double</code> reduces the CPU reference accumulation error. The notebook reports:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU sum</td>
+<td align="right">523641.625000</td>
+</tr>
+<tr>
+<td>CPU sum</td>
+<td align="right">523641.625000</td>
+</tr>
+<tr>
+<td>Tolerance</td>
+<td align="right"><code>1e-2</code></td>
+</tr>
+<tr>
+<td>Correctness</td>
+<td align="right">PASS</td>
+</tr>
+</tbody></table>
+<p>The printed results match exactly in this run.</p>
+<h3>Floating-Point Reduction Caveat</h3>
+<p>Floating-point addition is not strictly associative:</p>
+<pre><code class="language-text">(a + b) + c != a + (b + c)
+</code></pre>
+<p>A CPU serial reduction usually accumulates values in one sequential order:</p>
+<pre><code class="language-text">(((x0 + x1) + x2) + x3) ...
+</code></pre>
+<p>A GPU tree reduction combines values in a different order:</p>
+<pre><code class="language-text">(x0 + x16), (x1 + x17), ...
+</code></pre>
+<p>and then continues merging partial sums. Because rounding happens in a different order, the GPU and CPU results may differ slightly. Reduction validation should therefore use a tolerance:</p>
+<pre><code class="language-cpp">fabs(gpu - cpu) &lt; tol
+</code></pre>
+<p>For larger reductions, a combined absolute and relative tolerance is often more robust:</p>
+<pre><code class="language-cpp">diff &lt;= atol + rtol * fabs(cpu)
+</code></pre>
+<h3>Key Takeaways</h3>
+<table>
+<thead>
+<tr>
+<th>Lesson</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Reduction is foundational for ML kernels</td>
+<td>Softmax, LayerNorm, attention, loss functions, and normalization all depend on reductions.</td>
+</tr>
+<tr>
+<td>Avoid one global atomic per element</td>
+<td>Direct atomic accumulation into one global address causes heavy serialization.</td>
+</tr>
+<tr>
+<td>Warp shuffle reduces shared-memory traffic</td>
+<td>Values move between lanes through registers instead of repeated shared-memory stores/loads.</td>
+</tr>
+<tr>
+<td>The full warp result is in lane 0</td>
+<td>After a downward shuffle reduction, only lane 0 should write the warp result.</td>
+</tr>
+<tr>
+<td>Shared memory is still needed across warps</td>
+<td>Warp shuffle cannot communicate directly between different warps.</td>
+</tr>
+<tr>
+<td><code>__syncthreads()</code> is required for cross-warp exchange</td>
+<td>The first warp must not read <code>warpSums</code> before other warps have written them.</td>
+</tr>
+<tr>
+<td>Final GPU reductions need another stage</td>
+<td>A complete production reduction would finish remaining block partial sums on GPU.</td>
+</tr>
+<tr>
+<td>Floating-point tolerance is required</td>
+<td>CPU and GPU reduction orders differ, so exact equality is not a safe validation rule.</td>
+</tr>
+</tbody></table>
+<h2>Loop Unrolling and Register Optimization</h2>
+<p><img src="../assets/projects/cuda-kernels/loop-unrolling-register-optimization.png" alt="CUDA loop unrolling and register optimization mechanism, trade-off, and measured results"></p>
+<p>This CUDA fundamentals experiment studies how loop unrolling, register-resident temporary variables, and constant-memory broadcast affect a dot-product style workload.</p>
+<p>The computation is:</p>
+<pre><code class="language-text">out[i] = sum_{k=0}^{K-1} A[i, k] * B[k]
+</code></pre>
+<p>Each CUDA thread owns one row of <code>A</code> and computes a dot product against the shared vector <code>B</code>.</p>
+<p>The experiment compares three versions:</p>
+<ol>
+<li>Baseline loop.</li>
+<li>Unroll x4 with <code>B</code> in global memory.</li>
+<li>Unroll x4 with <code>B</code> in constant memory.</li>
+</ol>
+<p>The experiment runs on an NVIDIA A100:</p>
+<pre><code class="language-text">M = 1,048,576
+K = 1024
+UNROLL = 4
+</code></pre>
+<p>All three kernels pass the correctness check.</p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#motivation-loop-overhead-and-register-reuse">Motivation: Loop Overhead and Register Reuse</a></li>
+<li><a href="#concrete-unrolling-example">Concrete Unrolling Example</a></li>
+<li><a href="#baseline-dot-product-kernel">Baseline Dot-Product Kernel</a></li>
+<li><a href="#unroll-register-kernel">Unroll + Register Kernel</a></li>
+<li><a href="#constant-memory-version">Constant-Memory Version</a></li>
+<li><a href="#loop-unrolling-benchmark-results">Loop Unrolling Benchmark Results</a></li>
+<li><a href="#why-constant-memory-did-not-improve-further">Why Constant Memory Did Not Improve Further</a></li>
+</ul>
+<h3>Motivation: Loop Overhead and Register Reuse</h3>
+<p>A normal inner loop looks like this:</p>
+<pre><code class="language-cpp">for (int k = 0; k &lt; K; ++k) {
+    acc += Ai[k] * B[k];
+}
+</code></pre>
+<p>Besides the useful multiply-add work, each iteration also requires:</p>
+<ul>
+<li>Updating the loop counter.</li>
+<li>Checking the loop condition.</li>
+<li>Executing the branch.</li>
+<li>Computing the next address.</li>
+</ul>
+<p>Loop unrolling processes multiple elements per loop iteration. This reduces loop-control overhead and gives the compiler more room for instruction scheduling.</p>
+<p>Register optimization keeps thread-local values such as:</p>
+<pre><code class="language-cpp">float acc;
+float a;
+float b;
+</code></pre>
+<p>resident in registers where possible, avoiding unnecessary memory traffic for temporary values.</p>
+<h3>Concrete Unrolling Example</h3>
+<p>Assume:</p>
+<pre><code class="language-text">K = 8
+UNROLL = 4
+</code></pre>
+<p>The baseline loop executes eight iterations:</p>
+<pre><code class="language-text">k = 0
+k = 1
+k = 2
+...
+k = 7
+</code></pre>
+<p>After unrolling by 4, the outer loop executes only two iterations:</p>
+<pre><code class="language-text">First iteration:  k = 0, 1, 2, 3
+Second iteration: k = 4, 5, 6, 7
+</code></pre>
+<p>The expanded inner work is roughly:</p>
+<pre><code class="language-cpp">acc += Ai[k]     * B[k];
+acc += Ai[k + 1] * B[k + 1];
+acc += Ai[k + 2] * B[k + 2];
+acc += Ai[k + 3] * B[k + 3];
+</code></pre>
+<p>The loop condition, counter update, and branch frequency are reduced to about one quarter of the baseline loop.</p>
+<h3>Baseline Dot-Product Kernel</h3>
+<p>The baseline kernel uses a simple loop:</p>
+<pre><code class="language-cpp">for (int k = 0; k &lt; K; ++k) {
+    acc += Ai[k] * B[k];
+}
+</code></pre>
+<p>Each thread:</p>
+<ul>
+<li>Reads one full row of <code>A</code>.</li>
+<li>Repeatedly reads the common vector <code>B</code>.</li>
+<li>Uses one accumulator for the dot product.</li>
+<li>Writes one output element.</li>
+</ul>
+<p>This baseline is easy to understand and provides the reference for measuring the impact of loop unrolling.</p>
+<h3>Unroll + Register Kernel</h3>
+<p>The optimized version uses:</p>
+<pre><code class="language-cpp">#define UNROLL 4
+</code></pre>
+<p>The core loop is:</p>
+<pre><code class="language-cpp">for (; k + UNROLL - 1 &lt; K; k += UNROLL) {
+    #pragma unroll
+    for (int u = 0; u &lt; UNROLL; ++u) {
+        float a = Ai[k + u];
+        float b = B[k + u];
+        acc += a * b;
+    }
+}
+</code></pre>
+<p>It also includes a tail loop:</p>
+<pre><code class="language-cpp">for (; k &lt; K; ++k) {
+    acc += Ai[k] * B[k];
+}
+</code></pre>
+<p>The tail loop handles cases where <code>K</code> is not divisible by <code>UNROLL</code>. For example:</p>
+<pre><code class="language-text">K = 10
+UNROLL = 4
+</code></pre>
+<p>The unrolled loop processes the first eight elements, and the tail loop processes the final two elements.</p>
+<h3>Constant-Memory Version</h3>
+<p>The constant-memory version stores <code>B</code> as:</p>
+<pre><code class="language-cpp">__constant__ float Bc[MAX_K];
+</code></pre>
+<p>and copies the host vector with:</p>
+<pre><code class="language-cpp">cudaMemcpyToSymbol(Bc, hB, bytesB);
+</code></pre>
+<p>This workload appears suitable for constant memory because, at the same <code>k</code> iteration, all threads in a warp read the same <code>B</code> element:</p>
+<pre><code class="language-text">Thread 0  -&gt; B[k]
+Thread 1  -&gt; B[k]
+...
+Thread 31 -&gt; B[k]
+</code></pre>
+<p>That access pattern can use constant-cache broadcast.</p>
+<h3>Loop Unrolling Benchmark Results</h3>
+<p>Benchmark setting from notebook: NVIDIA A100, dot-product style workload with <code>M=1,048,576</code>, <code>K=1024</code>, and <code>UNROLL=4</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th>Correctness</th>
+<th align="right">Time</th>
+<th align="right">GFLOP/s</th>
+<th align="right">Speedup vs Baseline</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Baseline</td>
+<td>PASS</td>
+<td align="right">8.4628 ms</td>
+<td align="right">253.76</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>Unroll + registers, global B</td>
+<td>PASS</td>
+<td align="right">7.3327 ms</td>
+<td align="right">292.86</td>
+<td align="right">1.15x</td>
+</tr>
+<tr>
+<td>Unroll + registers, constant B</td>
+<td>PASS</td>
+<td align="right">7.3741 ms</td>
+<td align="right">291.22</td>
+<td align="right">1.15x</td>
+</tr>
+</tbody></table>
+<p>The unrolled global-memory version improves runtime by:</p>
+<pre><code class="language-text">8.4628 / 7.3327 ~= 1.15x
+</code></pre>
+<p>or about 15%.</p>
+<p>The constant-memory version performs almost the same as the global-memory unrolled version and does not provide an additional speedup in this benchmark.</p>
+<h3>Why Constant Memory Did Not Improve Further</h3>
+<p>The vector <code>B</code> is small:</p>
+<pre><code class="language-text">1024 * 4 = 4096 bytes = 4 KiB
+</code></pre>
+<p>It can already fit easily in cache.</p>
+<p>By contrast, <code>A</code> is much larger:</p>
+<pre><code class="language-text">1,048,576 * 1024 * 4 ~= 4 GiB
+</code></pre>
+<p>The dominant memory traffic therefore comes from reading <code>A</code>, not from reading <code>B</code>. Even if <code>B</code> access is further optimized through constant-memory broadcast, the total runtime changes little because <code>B</code> is not the main bandwidth cost.</p>
+<p>The main lesson is:</p>
+<pre><code class="language-text">Loop unrolling helps by reducing loop overhead and improving instruction
+scheduling, but constant memory only helps when the optimized operand is a
+meaningful part of the total bottleneck.
+</code></pre>
+<h2>Matrix Multiplication</h2>
+<p><img src="../assets/projects/cuda-kernels/matmul-optimization-overall-pipeline.png" alt="CUDA matrix multiplication optimization overall pipeline"></p>
+<p>Matrix multiplication computes:</p>
+<pre><code class="language-text">C = A * B
+A: M x K
+B: K x N
+C: M x N
+</code></pre>
+<p>The CPU baseline has <code>O(M*N*K)</code> work and becomes too slow for large matrices. The CUDA version maps output elements or output tiles to GPU threads/blocks.</p>
+<p><img src="../assets/projects/cuda-kernels/matmul-gpu-mapping.png" alt="GPU matmul mapping"></p>
+<h3>GEMM Optimization Case Study</h3>
+<p><img src="../assets/projects/cuda-kernels/matmul-tile16-vs-tile32-tradeoff.png" alt="CUDA MatMul tile size trade-off between 16x16 and 32x32"></p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#gemm-optimization-roadmap">GEMM Optimization Roadmap</a></li>
+<li><a href="#gemm-benchmark-results">GEMM Benchmark Results</a></li>
+<li><a href="#motivation-why-gemm-matters">Motivation: Why GEMM Matters</a></li>
+<li><a href="#naive-gemm-and-repeated-global-memory-access">Naive GEMM and Repeated Global-Memory Access</a></li>
+<li><a href="#project-scope-five-kernels">Project Scope: Five Kernels</a></li>
+<li><a href="#matrix-layout-and-indexing">Matrix Layout and Indexing</a></li>
+<li><a href="#concrete-tile-mapping-example">Concrete Tile Mapping Example</a></li>
+<li><a href="#kernel-1-naive-matrix-multiplication">Kernel 1: Naive Matrix Multiplication</a></li>
+<li><a href="#kernel-2-block-tiling-with-global-loads">Kernel 2: Block Tiling with Global Loads</a></li>
+<li><a href="#kernel-3-shared-memory-tiled-matmul-tile-16">Kernel 3: Shared-Memory Tiled MatMul, Tile 16</a></li>
+<li><a href="#kernel-4-tile-32-with-bank-conflict">Kernel 4: Tile 32 with Bank Conflict</a></li>
+<li><a href="#kernel-5-tile-32-with-padding">Kernel 5: Tile 32 with Padding</a></li>
+<li><a href="#benchmarking-and-correctness">Benchmarking and Correctness</a></li>
+<li><a href="#profiler-metrics-snapshot">Profiler Metrics Snapshot</a></li>
+<li><a href="#boundary-and-synchronization-caveat">Boundary and Synchronization Caveat</a></li>
+<li><a href="#tile-size-16-vs-32-trade-off">Tile Size 16 vs 32 Trade-off</a></li>
+<li><a href="#distance-from-cublas">Distance from cuBLAS</a></li>
+</ul>
+<p>This GEMM notebook starts from the most basic matrix multiplication kernel and progressively implements five CUDA versions:</p>
+<ol>
+<li>Naive MatMul.</li>
+<li>Block-tiled MatMul that still reads directly from global memory.</li>
+<li>Shared-memory tiled MatMul with <code>TILE = 16</code>.</li>
+<li>Shared-memory <code>TILE = 32</code> with an intentionally constructed bank conflict.</li>
+<li>Shared-memory <code>TILE = 32</code> with padding to remove the main bank conflict.</li>
+</ol>
+<p>The experiment uses:</p>
+<pre><code class="language-text">M = N = K = 1024
+C = A x B
+GPU = NVIDIA Tesla T4
+CUDA = CUDA 12.x toolchain
+</code></pre>
+<p>All five kernels pass the correctness check.</p>
+<h3>GEMM Optimization Roadmap</h3>
+<p>The GEMM path is intentionally staged so that each version isolates one optimization idea:</p>
+<ol>
+<li><strong>Naive kernel:</strong> each thread computes one output element and repeatedly reads from global memory.</li>
+<li><strong>Block tiling:</strong> each block computes a tile of <code>C</code>, establishing the tile-based work partitioning.</li>
+<li><strong>Shared-memory tiling:</strong> tiles of <code>A</code> and <code>B</code> are loaded into shared memory and reused by threads in the block.</li>
+<li><strong>Tile-size tuning:</strong> compare <code>TILE = 16</code> and <code>TILE = 32</code>.</li>
+<li><strong>Bank-conflict experiment:</strong> intentionally expose how a bad shared-memory layout can make a larger tile slower.</li>
+<li><strong>Padding:</strong> change the shared-memory pitch to avoid conflict-heavy access.</li>
+</ol>
+<p>This path matters because it separates two ideas that are often mixed together:</p>
+<pre><code class="language-text">Tiling organizes the computation.
+Shared memory turns that organization into explicit data reuse.
+</code></pre>
+<h3>GEMM Benchmark Results</h3>
+<p>Environment from notebook: Tesla T4, CUDA 12.x toolchain. Matrix size: <code>M=N=K=1024</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th>Correctness</th>
+<th align="right">Time</th>
+<th align="right">GFLOP/s</th>
+<th align="right">Speedup vs Naive</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive MatMul baseline</td>
+<td>PASS</td>
+<td align="right">9.1753 ms</td>
+<td align="right">234.05</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>Block tiled, still global loads</td>
+<td>PASS</td>
+<td align="right">4.0592 ms</td>
+<td align="right">529.04</td>
+<td align="right">2.26x</td>
+</tr>
+<tr>
+<td>Shared-memory tiled, Tile 16</td>
+<td>PASS</td>
+<td align="right">2.4577 ms</td>
+<td align="right">873.76</td>
+<td align="right">3.73x</td>
+</tr>
+<tr>
+<td>Shared-memory tiled, Tile 32 with bank conflict</td>
+<td>PASS</td>
+<td align="right">10.4073 ms</td>
+<td align="right">206.34</td>
+<td align="right">0.88x</td>
+</tr>
+<tr>
+<td>Shared-memory Tile 32 with padding</td>
+<td>PASS</td>
+<td align="right">2.0924 ms</td>
+<td align="right">1026.32</td>
+<td align="right">4.39x</td>
+</tr>
+</tbody></table>
+<p>The best GEMM kernel in this benchmark is the padded Tile 32 shared-memory version, reaching about <code>1026</code> GFLOP/s and <code>4.39x</code> speedup over the naive baseline.</p>
+<p>The most important conclusion is:</p>
+<pre><code class="language-text">Tiling creates the computation structure, but shared-memory data reuse is what
+actually reduces repeated global-memory traffic. If the shared-memory layout
+creates severe bank conflicts, a larger tile can be slower than the naive kernel.
+</code></pre>
+<h3>Motivation: Why GEMM Matters</h3>
+<p>Matrix multiplication is the computational core of many ML and scientific workloads:</p>
+<ul>
+<li>Transformer linear layers.</li>
+<li>Q, K, and V projections.</li>
+<li>Attention score calculation.</li>
+<li>MLP layers.</li>
+<li>Some convolution implementations.</li>
+<li>Scientific computing kernels.</li>
+<li>cuBLAS GEMM.</li>
+<li>Triton matmul.</li>
+<li>Tensor Core workloads.</li>
+</ul>
+<p>The mathematical definition is:</p>
+<pre><code class="language-text">C[i, j] = sum_{k=0}^{K-1} A[i, k] * B[k, j]
+</code></pre>
+<p>Because GEMM combines high arithmetic work with repeated memory access, it is one of the most representative projects for learning GPU performance optimization.</p>
+<h3>Naive GEMM and Repeated Global-Memory Access</h3>
+<p>In the naive kernel, each thread computes one output element:</p>
+<pre><code class="language-cpp">for (int k = 0; k &lt; K; ++k) {
+    acc += A[row * K + k] * B[k * N + col];
+}
+</code></pre>
+<p>For each output element, one thread performs <code>K</code> multiply-add steps and reads:</p>
+<pre><code class="language-text">K A elements + K B elements
+</code></pre>
+<p>Ignoring cache effects, the full output matrix therefore creates roughly:</p>
+<pre><code class="language-text">2 * M * N * K global loads
+</code></pre>
+<p>The key issue is not that every individual memory access is necessarily uncoalesced. For example, neighboring threads often read consecutive <code>B[k, col]</code> values, which can be coalesced. The more accurate problem is:</p>
+<pre><code class="language-text">The naive kernel repeatedly loads A and B values from global memory without
+explicitly organizing block-level data reuse.
+</code></pre>
+<p>The optimization goal is to load A and B tiles from global memory once per block, place them in shared memory, and reuse them across the threads computing the output tile.</p>
+<h3>Project Scope: Five Kernels</h3>
+<p>The notebook implements five kernels:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive MatMul</td>
+<td>One thread computes one <code>C</code> element and reads operands directly from global memory.</td>
+</tr>
+<tr>
+<td>Block tiling structure</td>
+<td>One block maps to a <code>16x16</code> tile of <code>C</code>; the <code>K</code> loop is split into <code>16</code>-wide tiles, but operands are still loaded from global memory.</td>
+</tr>
+<tr>
+<td>Shared-memory Tile 16</td>
+<td>Each block loads <code>16x16</code> A and B tiles into shared memory and reuses them.</td>
+</tr>
+<tr>
+<td>Shared-memory Tile 32 with bank conflict</td>
+<td>Uses <code>32x32</code> blocks and transposed B shared-memory layout to intentionally create severe bank conflicts.</td>
+</tr>
+<tr>
+<td>Shared-memory Tile 32 with padding</td>
+<td>Changes the B shared-memory pitch from <code>32</code> to <code>33</code> to remove the main bank conflict.</td>
+</tr>
+</tbody></table>
+<p>The project also includes:</p>
+<ul>
+<li>CPU GEMM reference.</li>
+<li>Elementwise correctness checking.</li>
+<li>CUDA-event timing.</li>
+<li>Warmup and repeated benchmark iterations.</li>
+<li>GFLOP/s calculation.</li>
+<li>CUDA error checking.</li>
+</ul>
+<h3>Matrix Layout and Indexing</h3>
+<p>All matrices use row-major layout:</p>
+<pre><code class="language-text">A: M x K
+B: K x N
+C: M x N
+</code></pre>
+<p>The one-dimensional addresses are:</p>
+<pre><code class="language-text">A[row][k]   -&gt; A[row * K + k]
+B[k][col]   -&gt; B[k * N + col]
+C[row][col] -&gt; C[row * N + col]
+</code></pre>
+<p>Each CUDA thread maps to one output coordinate:</p>
+<pre><code class="language-cpp">int row = blockIdx.y * TILE + threadIdx.y;
+int col = blockIdx.x * TILE + threadIdx.x;
+</code></pre>
+<p>Here:</p>
+<table>
+<thead>
+<tr>
+<th>Index</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>blockIdx.y</code></td>
+<td>Selects the output tile row.</td>
+</tr>
+<tr>
+<td><code>blockIdx.x</code></td>
+<td>Selects the output tile column.</td>
+</tr>
+<tr>
+<td><code>threadIdx.y</code></td>
+<td>Selects the row inside the tile.</td>
+</tr>
+<tr>
+<td><code>threadIdx.x</code></td>
+<td>Selects the column inside the tile.</td>
+</tr>
+</tbody></table>
+<h3>Concrete Tile Mapping Example</h3>
+<p>Assume:</p>
+<pre><code class="language-text">TILE = 4
+M = N = K = 8
+</code></pre>
+<p>Then <code>C</code> is divided into four <code>4x4</code> tiles:</p>
+<pre><code class="language-text">C tile (0,0) | C tile (0,1)
+-------------+-------------
+C tile (1,0) | C tile (1,1)
+</code></pre>
+<p>For <code>blockIdx = (1, 0)</code>, the block computes:</p>
+<pre><code class="language-text">rows    0-3
+columns 4-7
+</code></pre>
+<p>For <code>threadIdx = (2, 1)</code>:</p>
+<pre><code class="language-text">row = 0 * 4 + 1 = 1
+col = 1 * 4 + 2 = 6
+</code></pre>
+<p>so that thread computes:</p>
+<pre><code class="language-text">C[1][6] = A[1][0]B[0][6] + ... + A[1][7]B[7][6]
+</code></pre>
+<p>The <code>K</code> dimension is split into two tiles:</p>
+<pre><code class="language-text">K tile 0: k = 0-3
+K tile 1: k = 4-7
+</code></pre>
+<p>In the first round, the block loads:</p>
+<pre><code class="language-text">A rows 0-3, columns 0-3
+B rows 0-3, columns 4-7
+</code></pre>
+<p>In the second round, it loads:</p>
+<pre><code class="language-text">A rows 0-3, columns 4-7
+B rows 4-7, columns 4-7
+</code></pre>
+<p>Each round computes a partial dot product, and the thread accumulates those partial results into the final <code>C[1][6]</code>.</p>
+<p>The block-level mapping below shows the same idea at the full CUDA launch level: a block owns a tile of the output matrix, while threads inside the block map to elements within that tile.</p>
+<p><img src="../assets/projects/cuda-kernels/matmul-block-tiling.png" alt="MatMul block tiling"></p>
+<h3>Kernel 1: Naive Matrix Multiplication</h3>
+<p>The naive kernel is:</p>
+<pre><code class="language-cpp">__global__ void matmulNaive(
+    const float* A,
+    const float* B,
+    float* C,
+    int M,
+    int N,
+    int K
+) {
+    int row = blockIdx.y * TILE16 + threadIdx.y;
+    int col = blockIdx.x * TILE16 + threadIdx.x;
+
+    float acc = 0.0f;
+
+    if (row &lt; M &amp;&amp; col &lt; N) {
+        for (int k = 0; k &lt; K; ++k) {
+            acc += A[row * K + k] * B[k * N + col];
+        }
+
+        C[row * N + col] = acc;
+    }
+}
+</code></pre>
+<p>Each thread computes one output element. For <code>M=N=K=1024</code>, the total floating-point work is:</p>
+<pre><code class="language-text">2 * 1024^3 = 2,147,483,648 FLOPs
+</code></pre>
+<p>or about <code>2.147</code> GFLOPs of work, counting one multiplication and one addition per inner-loop step.</p>
+<p>Naive result:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Time</td>
+<td align="right">9.1753 ms</td>
+</tr>
+<tr>
+<td>GFLOP/s</td>
+<td align="right">234.05</td>
+</tr>
+<tr>
+<td>Correctness</td>
+<td align="right">PASS</td>
+</tr>
+</tbody></table>
+<p>This version is the baseline for the later optimization stages.</p>
+<h3>Kernel 2: Block Tiling with Global Loads</h3>
+<p><img src="../assets/projects/cuda-kernels/matmul-tiled-dataflow.png" alt="CUDA shared-memory tiled MatMul dataflow"></p>
+<p><img src="../assets/projects/cuda-kernels/matmul-naive-vs-tiled-memory-traffic.png" alt="CUDA MatMul naive versus tiled memory traffic and data reuse"></p>
+<p>The second version changes the loop structure:</p>
+<pre><code class="language-cpp">for (int k_tile = 0; k_tile &lt; K; k_tile += TILE16) {
+    for (int k_in_tile = 0; k_in_tile &lt; TILE16; ++k_in_tile) {
+        int k = k_tile + k_in_tile;
+
+        if (k &lt; K) {
+            acc += A[row * K + k] * B[k * N + col];
+        }
+    }
+}
+</code></pre>
+<p>Mathematically, it still computes the same dot product. The main difference is that it:</p>
+<ul>
+<li>Explicitly introduces the block-tile concept.</li>
+<li>Splits the <code>K</code> loop into smaller tiles.</li>
+<li>Uses an inner tile loop that can be unrolled.</li>
+<li>Prepares the code structure for shared-memory tiling.</li>
+</ul>
+<p>However, this kernel still reads:</p>
+<pre><code class="language-cpp">A[row * K + k]
+B[k * N + col]
+</code></pre>
+<p>directly from global memory. Therefore, it does not explicitly reduce global-memory traffic. It reorganizes the loop but does not cache A/B tiles in shared memory.</p>
+<p>Result:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th align="right">Time</th>
+<th align="right">Speedup vs Naive</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive</td>
+<td align="right">9.1753 ms</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>Block tiled, still global loads</td>
+<td align="right">4.0592 ms</td>
+<td align="right">2.26x</td>
+</tr>
+</tbody></table>
+<p>The improvement is likely due to compiler and loop-structure effects, such as better unrolling, instruction scheduling, cache behavior, and instruction-level parallelism. The notebook does not include SASS/PTX or Nsight counters proving the exact cause, so the careful interpretation is:</p>
+<pre><code class="language-text">The block-tiled loop structure improved runtime in this experiment, but it did
+not explicitly reduce global-memory traffic because operands were still loaded
+directly from global memory.
+</code></pre>
+<h3>Kernel 3: Shared-Memory Tiled MatMul, Tile 16</h3>
+<p>The Tile 16 version is the classical shared-memory GEMM optimization:</p>
+<pre><code class="language-cpp">__shared__ float As[16][16];
+__shared__ float Bs[16][16];
+</code></pre>
+<p>Each block uses:</p>
+<pre><code class="language-text">2 * 16 * 16 * 4 = 2048 bytes = 2 KiB shared memory
+</code></pre>
+<p>For each <code>K</code> tile, the block performs:</p>
+<ol>
+<li>Load an A tile into shared memory.</li>
+<li>Load a B tile into shared memory.</li>
+<li>Synchronize the block.</li>
+<li>Compute using shared-memory values.</li>
+<li>Synchronize again before overwriting the shared-memory tiles.</li>
+</ol>
+<p>The figure below shows why the shared-memory version is different from mere block tiling: A and B tiles are loaded once from global memory into on-chip shared memory, then reused across the multiply-accumulate loop.</p>
+<p><img src="../assets/projects/cuda-kernels/matmul-shared-memory.png" alt="MatMul shared memory tiling"></p>
+<p>The tile-load pattern is:</p>
+<pre><code class="language-cpp">int aRow = row;
+int aCol = k_tile + threadIdx.x;
+
+As[threadIdx.y][threadIdx.x] =
+    (aRow &lt; M &amp;&amp; aCol &lt; K)
+    ? A[aRow * K + aCol]
+    : 0.0f;
+
+int bRow = k_tile + threadIdx.y;
+int bCol = col;
+
+Bs[threadIdx.y][threadIdx.x] =
+    (bRow &lt; K &amp;&amp; bCol &lt; N)
+    ? B[bRow * N + bCol]
+    : 0.0f;
+
+__syncthreads();
+
+for (int kk = 0; kk &lt; TILE16; ++kk) {
+    acc += As[threadIdx.y][kk] * Bs[kk][threadIdx.x];
+}
+
+__syncthreads();
+</code></pre>
+<p>For one <code>16x16</code> output tile and one <code>K</code> tile of length 16:</p>
+<table>
+<thead>
+<tr>
+<th>Version</th>
+<th align="right">Global reads</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive/global version</td>
+<td align="right"><code>256 threads * 32 reads = 8192 floats</code></td>
+</tr>
+<tr>
+<td>Shared-memory version</td>
+<td align="right"><code>256 A values + 256 B values = 512 floats</code></td>
+</tr>
+</tbody></table>
+<p>The ideal source-code-level reuse factor is:</p>
+<pre><code class="language-text">8192 / 512 = 16x
+</code></pre>
+<p>Actual DRAM traffic depends on cache, broadcast behavior, and compiler code generation, but the shared-memory algorithm clearly expresses block-level data reuse.</p>
+<p>Tile 16 result:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Time</td>
+<td align="right">2.4577 ms</td>
+</tr>
+<tr>
+<td>GFLOP/s</td>
+<td align="right">873.76</td>
+</tr>
+<tr>
+<td>Speedup vs Naive</td>
+<td align="right">3.73x</td>
+</tr>
+<tr>
+<td>Speedup vs block-tiled global-load version</td>
+<td align="right">1.65x</td>
+</tr>
+<tr>
+<td>Correctness</td>
+<td align="right">PASS</td>
+</tr>
+</tbody></table>
+<p>The timing results are consistent with reduced global-memory traffic through shared-memory reuse.</p>
+<h3>Kernel 4: Tile 32 with Bank Conflict</h3>
+<p>The Tile 32 conflict version uses:</p>
+<pre><code class="language-cpp">dim3 block32(32, 32);
+</code></pre>
+<p>That is:</p>
+<pre><code class="language-text">32 * 32 = 1024 threads per block
+</code></pre>
+<p>which reaches the common CUDA maximum number of threads per block.</p>
+<p>Shared memory:</p>
+<pre><code class="language-cpp">__shared__ float As[32][32];
+__shared__ float BsT[32][32];
+</code></pre>
+<p>Total shared memory:</p>
+<pre><code class="language-text">2 * 32 * 32 * 4 = 8192 bytes = 8 KiB
+</code></pre>
+<p>The kernel stores B in a transposed shared-memory layout:</p>
+<pre><code class="language-cpp">float bval = B[bRow * N + col];
+BsT[threadIdx.x][threadIdx.y] = bval;
+</code></pre>
+<p>and later computes:</p>
+<pre><code class="language-cpp">acc += As[threadIdx.y][kk] * BsT[threadIdx.x][kk];
+</code></pre>
+<p>This still computes the correct mathematical result, but it intentionally creates column-like shared-memory access.</p>
+<p>For <code>BsT</code>, the row pitch is 32. The shared-memory index is:</p>
+<pre><code class="language-text">index = tx * 32 + kk
+</code></pre>
+<p>For a warp where <code>tx = 0, 1, 2, ..., 31</code> and <code>kk</code> is fixed:</p>
+<pre><code class="language-text">bank = (tx * 32 + kk) mod 32 = kk
+</code></pre>
+<p>So the 32 threads access 32 different addresses that all map to the same bank:</p>
+<pre><code class="language-text">32-way bank conflict
+</code></pre>
+<p>The transposed store can also conflict:</p>
+<pre><code class="language-cpp">BsT[threadIdx.x][threadIdx.y] = bval;
+</code></pre>
+<p>For fixed <code>ty</code>, the address is:</p>
+<pre><code class="language-text">tx * 32 + ty
+</code></pre>
+<p>which also maps every thread to bank <code>ty</code>.</p>
+<p>Result:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th align="right">Time</th>
+<th align="right">GFLOP/s</th>
+<th align="right">Relative to Naive</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive</td>
+<td align="right">9.1753 ms</td>
+<td align="right">234.05</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>Tile 32 with bank conflict</td>
+<td align="right">10.4073 ms</td>
+<td align="right">206.34</td>
+<td align="right">0.88x</td>
+</tr>
+</tbody></table>
+<p>The conflicted Tile 32 kernel is about 13% slower than the naive kernel. The causes include severe shared-memory bank conflicts, <code>1024</code> threads per block reducing block residency flexibility, extra synchronization, and additional transposed-indexing overhead.</p>
+<p>The lesson is:</p>
+<pre><code class="language-text">Shared memory is only fast when its access layout is efficient.
+</code></pre>
+<h3>Kernel 5: Tile 32 with Padding</h3>
+<p>The padding version changes:</p>
+<pre><code class="language-cpp">BsT[32][32]
+</code></pre>
+<p>to:</p>
+<pre><code class="language-cpp">BsT[32][33]
+</code></pre>
+<p>The pitch changes from 32 to 33. The bank mapping becomes:</p>
+<pre><code class="language-text">index = tx * 33 + kk
+bank  = (tx * 33 + kk) mod 32
+      = (tx + kk) mod 32
+</code></pre>
+<p>As <code>tx</code> goes from 0 to 31, the accesses are spread across different banks.</p>
+<p>The padding cost is small:</p>
+<table>
+<thead>
+<tr>
+<th>Layout</th>
+<th align="right">Shared memory for B tile</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>32x32</code></td>
+<td align="right">4096 bytes</td>
+</tr>
+<tr>
+<td><code>32x33</code></td>
+<td align="right">4224 bytes</td>
+</tr>
+<tr>
+<td>Extra cost</td>
+<td align="right">128 bytes</td>
+</tr>
+</tbody></table>
+<p>Total shared memory increases from <code>8192</code> bytes to <code>8320</code> bytes, but the bank mapping changes dramatically.</p>
+<p>Padding result:</p>
+<table>
+<thead>
+<tr>
+<th>Comparison</th>
+<th align="right">Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Tile 32 conflict</td>
+<td align="right">10.4073 ms, 206.34 GFLOP/s</td>
+</tr>
+<tr>
+<td>Tile 32 padded</td>
+<td align="right">2.0924 ms, 1026.32 GFLOP/s</td>
+</tr>
+<tr>
+<td>Speedup vs conflict version</td>
+<td align="right">4.97x</td>
+</tr>
+<tr>
+<td>Speedup vs naive</td>
+<td align="right">4.39x</td>
+</tr>
+<tr>
+<td>Speedup vs Tile 16</td>
+<td align="right">1.17x</td>
+</tr>
+</tbody></table>
+<p>The padded Tile 32 kernel is the fastest version in the notebook.</p>
+<h3>Benchmarking and Correctness</h3>
+<p>GFLOP/s is computed as:</p>
+<pre><code class="language-cpp">double flops = 2.0 * M * N * K;
+GFLOPS = flops / seconds / 1e9;
+</code></pre>
+<p>For <code>M=N=K=1024</code>, the total work is:</p>
+<pre><code class="language-text">2 * 1024^3 = 2.147 x 10^9 FLOPs
+</code></pre>
+<p>Each kernel is benchmarked with:</p>
+<ul>
+<li>5 warmup launches.</li>
+<li>20 timed iterations.</li>
+<li>CUDA events for GPU elapsed time.</li>
+<li>Average kernel latency as the reported result.</li>
+</ul>
+<p>This measures kernel execution time only. It does not include host allocation, device allocation, host-to-device copy, device-to-host copy, or CPU reference time.</p>
+<p>Correctness is checked against a CPU reference that uses a <code>double</code> accumulator:</p>
+<pre><code class="language-cpp">double acc = 0.0;
+
+for (int k = 0; k &lt; K; ++k) {
+    acc += static_cast&lt;double&gt;(A[i * K + k]) *
+           static_cast&lt;double&gt;(B[k * N + j]);
+}
+
+C[i * N + j] = static_cast&lt;float&gt;(acc);
+</code></pre>
+<p>The GPU output is compared with:</p>
+<pre><code class="language-cpp">fabsf(gpu[i] - ref[i]) &lt;= 1e-3
+</code></pre>
+<p>All five kernels pass.</p>
+<p>The notebook also runs Nsight Compute profiling. Profiler runs may print CUDA-event times that are hundreds or thousands of milliseconds because profiling performs replay passes, instrumentation, and repeated metric collection. Those profiler-time prints should not be interpreted as normal benchmark latency. The normal benchmark numbers are:</p>
+<pre><code class="language-text">9.1753 ms
+4.0592 ms
+2.4577 ms
+10.4073 ms
+2.0924 ms
+</code></pre>
+<h3>Profiler Metrics Snapshot</h3>
+<p>The interview review notes also record one representative Nsight Compute metrics snapshot for the five GEMM kernels:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th align="right">Mem GB/s</th>
+<th align="right">Max BW</th>
+<th align="right">L1 hit</th>
+<th align="right">L2 hit</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive</td>
+<td align="right">22.15</td>
+<td align="right">62.50%</td>
+<td align="right">87.37%</td>
+<td align="right">82.09%</td>
+</tr>
+<tr>
+<td>Structural Tile16</td>
+<td align="right">20.87</td>
+<td align="right">62.79%</td>
+<td align="right">87.31%</td>
+<td align="right">83.37%</td>
+</tr>
+<tr>
+<td>Shared Tile16</td>
+<td align="right">32.41</td>
+<td align="right">74.48%</td>
+<td align="right">6.21%</td>
+<td align="right">81.67%</td>
+</tr>
+<tr>
+<td>Conflicted Tile32</td>
+<td align="right">5.39</td>
+<td align="right">8.02%</td>
+<td align="right">0.00%</td>
+<td align="right">63.72%</td>
+</tr>
+<tr>
+<td>Padded Tile32</td>
+<td align="right">27.16</td>
+<td align="right">74.53%</td>
+<td align="right">0.00%</td>
+<td align="right">63.54%</td>
+</tr>
+</tbody></table>
+<p>These metrics should be interpreted carefully. The table is useful for comparing the custom kernels under one recorded T4 profiling run, but it does not by itself prove general superiority over cuBLAS, PyTorch, Tensor Core GEMM, or production kernels.</p>
+<p>The most important signal is the contrast between the conflicted and padded Tile32 kernels:</p>
+<pre><code class="language-text">Conflicted Tile32: 5.39 GB/s, 8.02% max bandwidth
+Padded Tile32:    27.16 GB/s, 74.53% max bandwidth
+</code></pre>
+<p>The padded version restores much higher effective memory throughput after removing the severe shared-memory bank-conflict pattern. This supports the timing result where padded Tile32 is about <code>4.97x</code> faster than the deliberately conflicted Tile32 kernel.</p>
+<p>The L1 hit-rate values are not a simple &quot;higher is always better&quot; score. Shared-memory tiling changes what is loaded through caches, what is reused through shared memory, and how the profiler attributes traffic. For this project, the profiler table is best used together with the source-level explanation of shared-memory reuse and bank-conflict avoidance.</p>
+<h3>Boundary and Synchronization Caveat</h3>
+<p>The shared-memory kernels contain an important code-review issue:</p>
+<pre><code class="language-cpp">if (row &gt;= M || col &gt;= N) return;
+</code></pre>
+<p>appears before code that later executes:</p>
+<pre><code class="language-cpp">__syncthreads();
+</code></pre>
+<p>If <code>M</code> or <code>N</code> is not divisible by the tile size, the final block may contain:</p>
+<ul>
+<li>Some threads that return early.</li>
+<li>Other threads that reach <code>__syncthreads()</code>.</li>
+</ul>
+<p>This is unsafe and can cause undefined behavior or block deadlock.</p>
+<p>The current experiment does not expose the issue because <code>M=N=1024</code>, and 1024 is divisible by both 16 and 32. A safer pattern is:</p>
+<pre><code class="language-cpp">bool validOutput = row &lt; M &amp;&amp; col &lt; N;
+
+As[ty][tx] =
+    (row &lt; M &amp;&amp; aCol &lt; K)
+    ? A[row * K + aCol]
+    : 0.0f;
+
+Bs[ty][tx] =
+    (bRow &lt; K &amp;&amp; col &lt; N)
+    ? B[bRow * N + col]
+    : 0.0f;
+
+__syncthreads();
+
+if (validOutput) {
+    C[row * N + col] = acc;
+}
+</code></pre>
+<p>The interview-ready rule is:</p>
+<pre><code class="language-text">Never place an early return before a block-wide barrier when only part of a
+block may take that return.
+</code></pre>
+<p>The naive kernel also uses:</p>
+<pre><code class="language-cpp">int row = blockIdx.y * TILE16 + threadIdx.y;
+int col = blockIdx.x * TILE16 + threadIdx.x;
+</code></pre>
+<p>which assumes the launch block is always <code>16x16</code>. A more general version is:</p>
+<pre><code class="language-cpp">int row = blockIdx.y * blockDim.y + threadIdx.y;
+int col = blockIdx.x * blockDim.x + threadIdx.x;
+</code></pre>
+<p>For shared-memory tiled kernels, compile-time tile sizes are still reasonable because the shared-memory array shape and loop unrolling depend on the tile size.</p>
+<h3>Tile Size 16 vs 32 Trade-off</h3>
+<p>Tile 16 uses:</p>
+<pre><code class="language-text">16 * 16 = 256 threads per block
+</code></pre>
+<p>Advantages:</p>
+<ul>
+<li>Moderate block size.</li>
+<li>More flexible block residency.</li>
+<li>Less shared memory per block.</li>
+<li>Finer boundary granularity.</li>
+</ul>
+<p>Costs:</p>
+<ul>
+<li>Tile-level reuse factor is about 16.</li>
+<li>More <code>K</code> tiles.</li>
+<li>More block barriers.</li>
+</ul>
+<p>For <code>K=1024</code>:</p>
+<pre><code class="language-text">1024 / 16 = 64 K tiles
+64 * 2 = 128 block barriers
+</code></pre>
+<p>Tile 32 uses:</p>
+<pre><code class="language-text">32 * 32 = 1024 threads per block
+</code></pre>
+<p>Advantages:</p>
+<ul>
+<li>Tile-level reuse factor is about 32.</li>
+<li><code>K</code> tile count is cut in half.</li>
+<li>Barrier count is cut in half.</li>
+</ul>
+<p>For <code>K=1024</code>:</p>
+<pre><code class="language-text">1024 / 32 = 32 K tiles
+32 * 2 = 64 block barriers
+</code></pre>
+<p>Costs:</p>
+<ul>
+<li>Maximum threads per block.</li>
+<li>Lower scheduling flexibility.</li>
+<li>Occupancy may be limited by block size, registers, or shared memory.</li>
+<li>Bad layout can produce severe bank conflicts.</li>
+<li>It may not be ideal for small or irregular matrices.</li>
+</ul>
+<p>The padded Tile 32 version is faster than Tile 16 in this specific experiment:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th align="right">Time</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Tile 16</td>
+<td align="right">2.4577 ms</td>
+</tr>
+<tr>
+<td>Tile 32 padded</td>
+<td align="right">2.0924 ms</td>
+</tr>
+</tbody></table>
+<p>This is likely due to higher reuse, fewer <code>K</code> tile iterations, fewer <code>__syncthreads()</code> calls, and removal of the main bank-conflict penalty. However, the result should not be generalized as &quot;Tile 32 is always better.&quot; The best tile size depends on thread count, register usage, shared memory usage, occupancy, tensor dimensions, bank conflicts, and GPU architecture.</p>
+<h3>Distance from cuBLAS</h3>
+<p>The fastest notebook kernel reaches:</p>
+<pre><code class="language-text">1026.32 GFLOP/s ~= 1.03 TFLOP/s
+</code></pre>
+<p>This is a useful teaching-level shared-memory GEMM, but it is not a cuBLAS-competitive GEMM implementation. It does not implement:</p>
+<ul>
+<li>Register tiling.</li>
+<li>Multiple output elements per thread.</li>
+<li>Vectorized loads.</li>
+<li>Double buffering.</li>
+<li>Asynchronous copy.</li>
+<li>Software pipelining.</li>
+<li>Warp-level tiling.</li>
+<li>Tensor Core MMA.</li>
+<li>WMMA.</li>
+<li>Mixed precision.</li>
+<li>Split-K.</li>
+<li>Epilogue fusion.</li>
+<li>Architecture-specific tuning.</li>
+</ul>
+<p>The current implementation follows:</p>
+<pre><code class="language-text">one thread -&gt; one C element
+</code></pre>
+<p>More advanced GEMM kernels usually let each thread compute a small output fragment and keep multiple accumulators in registers. The right positioning for this notebook is:</p>
+<pre><code class="language-text">A progression from naive GEMM to classical shared-memory tiling, not a
+cuBLAS-competitive GEMM implementation.
+</code></pre>
+<h2>Softmax</h2>
+<p><img src="../assets/projects/cuda-kernels/softmax-stable-reduction-dataflow.png" alt="CUDA stable Softmax and reduction dataflow"></p>
+<p><img src="../assets/projects/cuda-kernels/softmax-row-mapping-strategy-comparison.png" alt="CUDA Softmax row mapping strategy comparison across warp-per-row, block-per-row, and multi-warp-per-row"></p>
+<p>This experiment implements and compares three CUDA row-wise Softmax mapping strategies:</p>
+<ul>
+<li><strong>Warp-per-row:</strong> one warp handles one row.</li>
+<li><strong>Block-per-row:</strong> one block handles one row.</li>
+<li><strong>Multi-warp-per-row:</strong> a configurable number of warps cooperate on one row.</li>
+</ul>
+<p>The input is a 2D matrix:</p>
+<pre><code class="language-text">X in R^{B x D}
+</code></pre>
+<p>Softmax is applied independently to each row:</p>
+<pre><code class="language-text">y_i = exp(x_i - m) / sum_j exp(x_j - m)
+m = max_j x_j
+</code></pre>
+<p>The experiment runs on a Tesla T4 and tests different row lengths <code>D</code> to study how mapping strategy affects performance.</p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#why-softmax-subtracts-the-maximum">Why Softmax Subtracts the Maximum</a></li>
+<li><a href="#concrete-softmax-example">Concrete Softmax Example</a></li>
+<li><a href="#warp-level-reduction-for-softmax">Warp-Level Reduction for Softmax</a></li>
+<li><a href="#strategy-1-warp-per-row">Strategy 1: Warp-per-row</a></li>
+<li><a href="#strategy-2-block-per-row">Strategy 2: Block-per-row</a></li>
+<li><a href="#strategy-3-multi-warp-per-row">Strategy 3: Multi-warp-per-row</a></li>
+<li><a href="#softmax-benchmark-results">Softmax Benchmark Results</a></li>
+<li><a href="#main-softmax-mapping-conclusion">Main Softmax Mapping Conclusion</a></li>
+<li><a href="#three-pass-softmax">Three-pass Softmax</a></li>
+<li><a href="#toward-a-more-efficient-two-pass-softmax">Toward a More Efficient Two-pass Softmax</a></li>
+</ul>
+<h3>Why Softmax Subtracts the Maximum</h3>
+<p>Softmax is central to attention and must be numerically stable. Directly computing:</p>
+<pre><code class="language-text">exp(x_i)
+</code></pre>
+<p>can overflow. For example:</p>
+<pre><code class="language-text">x = [1000, 1001, 1002]
+</code></pre>
+<p><code>exp(1000)</code> is already outside the safe floating-point range. The stable implementation subtracts the row maximum first:</p>
+<pre><code class="language-text">m = 1002
+x - m = [-2, -1, 0]
+</code></pre>
+<p>Then:</p>
+<pre><code class="language-text">exp(-2), exp(-1), exp(0)
+</code></pre>
+<p>are all safe to compute, and the Softmax output is unchanged:</p>
+<pre><code class="language-text">exp(x_i - m) / sum_j exp(x_j - m)
+= exp(x_i) / sum_j exp(x_j)
+</code></pre>
+<p>Therefore the kernel needs three conceptual stages:</p>
+<pre><code class="language-text">Pass 1: find the row maximum
+Pass 2: compute the sum of exp(x - max)
+Pass 3: compute the normalized output
+</code></pre>
+<p><img src="../assets/projects/cuda-kernels/softmax-definition.png" alt="Softmax definition"></p>
+<h3>Concrete Softmax Example</h3>
+<p>Assume one input row is:</p>
+<pre><code class="language-text">x = [1, 2, 3, 4]
+</code></pre>
+<p>First find:</p>
+<pre><code class="language-text">m = 4
+</code></pre>
+<p>Then compute:</p>
+<pre><code class="language-text">exp(1 - 4) = exp(-3) ~= 0.0498
+exp(2 - 4) = exp(-2) ~= 0.1353
+exp(3 - 4) = exp(-1) ~= 0.3679
+exp(4 - 4) = exp(0)  = 1
+</code></pre>
+<p>The sum is:</p>
+<pre><code class="language-text">s ~= 1.553
+</code></pre>
+<p>The final Softmax output is approximately:</p>
+<pre><code class="language-text">[0.0321, 0.0871, 0.2369, 0.6439]
+</code></pre>
+<p>In CUDA, this is not computed by one thread serially. Multiple threads process different elements of the row, then use reductions to combine the row maximum and exponential sum.</p>
+<h3>Warp-Level Reduction for Softmax</h3>
+<p>The project implements:</p>
+<pre><code class="language-cpp">warpReduceMax(...)
+warpReduceSum(...)
+</code></pre>
+<p>using:</p>
+<pre><code class="language-cpp">__shfl_down_sync
+</code></pre>
+<p>with offsets:</p>
+<pre><code class="language-text">16, 8, 4, 2, 1
+</code></pre>
+<p>This reduces 32 thread-local values inside one warp down to lane 0:</p>
+<pre><code class="language-text">Reduce:
+32 local values -&gt; lane 0
+</code></pre>
+<p>Then the result is broadcast from lane 0 to all lanes:</p>
+<pre><code class="language-cpp">__shfl_sync(mask, result, 0)
+</code></pre>
+<pre><code class="language-text">Broadcast:
+lane 0 result -&gt; all 32 lanes
+</code></pre>
+<p><img src="../assets/projects/cuda-kernels/softmax-warp-reduction.png" alt="Warp-level reduction"></p>
+<h3>Strategy 1: Warp-per-row</h3>
+<p>In the warp-per-row strategy, one warp processes one full row. Each lane handles:</p>
+<pre><code class="language-cpp">for (int j = lane; j &lt; D; j += 32)
+</code></pre>
+<p>For example, when <code>D = 128</code>:</p>
+<pre><code class="language-text">Lane 0  handles j = 0, 32, 64, 96
+Lane 1  handles j = 1, 33, 65, 97
+...
+Lane 31 handles j = 31, 63, 95, 127
+</code></pre>
+<p>The flow is:</p>
+<ol>
+<li>Each lane computes a local maximum.</li>
+<li>Warp reduction computes the row maximum.</li>
+<li>Each lane computes a local exponential sum.</li>
+<li>Warp reduction computes the row sum.</li>
+<li>Each lane writes its output elements.</li>
+</ol>
+<p>Advantages:</p>
+<ul>
+<li>No shared memory is needed.</li>
+<li>No <code>__syncthreads()</code> is needed.</li>
+<li>Reductions use warp shuffle only.</li>
+<li>One block can process multiple rows.</li>
+</ul>
+<p>This strategy is best suited for small <code>D</code> and large batch/row count <code>B</code>.</p>
+<h3>Strategy 2: Block-per-row</h3>
+<p>In the block-per-row strategy, one block processes one row. Each thread visits:</p>
+<pre><code class="language-cpp">for (int j = threadIdx.x; j &lt; D; j += blockDim.x)
+</code></pre>
+<p>The block reduction uses two levels:</p>
+<pre><code class="language-text">Each warp performs shuffle reduction
+              ↓
+Lane 0 of each warp writes to shared memory
+              ↓
+The first warp combines warp partial results
+</code></pre>
+<p>This is better for longer rows, where 32 threads in one warp may not provide enough row-level parallelism.</p>
+<p>The costs are:</p>
+<ul>
+<li>Shared memory is required.</li>
+<li>Cross-warp synchronization is required.</li>
+<li>One full block is consumed per row.</li>
+<li>Short rows may waste many threads.</li>
+</ul>
+<h3>Strategy 3: Multi-warp-per-row</h3>
+<p>The multi-warp-per-row version also uses one block per row, but the number of warps per row is configurable:</p>
+<pre><code class="language-text">2 warps  = 64 threads
+4 warps  = 128 threads
+8 warps  = 256 threads
+16 warps = 512 threads
+</code></pre>
+<p>The kernel is conceptually similar to block-per-row. The main difference is the chosen <code>blockDim.x</code> at launch.</p>
+<p>The experiment looks for the balance between:</p>
+<pre><code class="language-text">too few threads  -&gt; each thread processes too many elements
+too many threads -&gt; more reduction, synchronization, and resource overhead
+</code></pre>
+<p>More warps per row are not always better.</p>
+<p><img src="../assets/projects/cuda-kernels/softmax-strategies.png" alt="Softmax implementation strategies"></p>
+<h3>Softmax Benchmark Results</h3>
+<p>Environment from notebook: Tesla T4. The benchmark reports average launch time and approximate memory bandwidth.</p>
+<table>
+<thead>
+<tr>
+<th>Shape</th>
+<th>Strategy</th>
+<th align="right">Time (ms)</th>
+<th align="right">Approx. GB/s</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>B=65536, D=128</code></td>
+<td>Warp-per-row</td>
+<td align="right">0.2871</td>
+<td align="right">233.75</td>
+<td>Best for small row width</td>
+</tr>
+<tr>
+<td><code>B=65536, D=128</code></td>
+<td>Block-per-row</td>
+<td align="right">0.9043</td>
+<td align="right">74.21</td>
+<td>Slower due to overhead for small rows</td>
+</tr>
+<tr>
+<td><code>B=65536, D=128</code></td>
+<td>Multiwarp-per-row</td>
+<td align="right">0.7211</td>
+<td align="right">93.06</td>
+<td>Also slower for small rows</td>
+</tr>
+<tr>
+<td><code>B=16384, D=512</code></td>
+<td>Warp-per-row</td>
+<td align="right">0.3279</td>
+<td align="right">204.12</td>
+<td>Slightly best in this run</td>
+</tr>
+<tr>
+<td><code>B=16384, D=512</code></td>
+<td>Block-per-row</td>
+<td align="right">0.3533</td>
+<td align="right">189.95</td>
+<td>Competitive</td>
+</tr>
+<tr>
+<td><code>B=16384, D=512</code></td>
+<td>Multiwarp-per-row</td>
+<td align="right">0.3503</td>
+<td align="right">191.59</td>
+<td>Competitive</td>
+</tr>
+<tr>
+<td><code>B=16384, D=512</code></td>
+<td>Multiwarp-per-row, 16 warps</td>
+<td align="right">0.4480</td>
+<td align="right">Lower</td>
+<td>Slower from extra overhead</td>
+</tr>
+<tr>
+<td><code>B=4096, D=4096</code></td>
+<td>Warp-per-row</td>
+<td align="right">1.2903</td>
+<td align="right">104.02</td>
+<td>Too little cooperation for long rows</td>
+</tr>
+<tr>
+<td><code>B=4096, D=4096</code></td>
+<td>Block-per-row, 512 threads</td>
+<td align="right">0.9278</td>
+<td align="right">144.66</td>
+<td>Better for long rows</td>
+</tr>
+<tr>
+<td><code>B=4096, D=4096</code></td>
+<td>Multiwarp-per-row</td>
+<td align="right">0.7547</td>
+<td align="right">177.84</td>
+<td>Best for long rows</td>
+</tr>
+</tbody></table>
+<p>For <code>D = 128</code>, warp-per-row is fastest:</p>
+<pre><code class="language-text">0.9043 / 0.2871 ~= 3.15x faster than block-per-row
+</code></pre>
+<p>The row is short enough that one warp is sufficient, and a full block adds unnecessary reduction and synchronization overhead.</p>
+<p>For <code>D = 512</code>, warp-per-row remains slightly fastest in this run. This is important because it differs from the simple rule that multi-warp is always best for medium rows. The result shows that medium row lengths require benchmarking.</p>
+<p>For <code>D = 4096</code>, multi-warp-per-row is fastest:</p>
+<pre><code class="language-text">1.2903 / 0.7547 ~= 1.71x faster than warp-per-row
+</code></pre>
+<p>With one warp, each lane processes about:</p>
+<pre><code class="language-text">4096 / 32 = 128 elements
+</code></pre>
+<p>With 256 threads, each thread processes about:</p>
+<pre><code class="language-text">4096 / 256 = 16 elements
+</code></pre>
+<p>The longer row benefits from higher row-level parallelism.</p>
+<h3>Main Softmax Mapping Conclusion</h3>
+<p>The project shows that Softmax mapping should be selected based on row length:</p>
+<table>
+<thead>
+<tr>
+<th>Row length</th>
+<th>Better strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Small <code>D</code></td>
+<td>Warp-per-row</td>
+</tr>
+<tr>
+<td>Medium <code>D</code></td>
+<td>Benchmark; warp or a small multi-warp configuration may win</td>
+</tr>
+<tr>
+<td>Large <code>D</code></td>
+<td>Multi-warp or block-per-row</td>
+</tr>
+</tbody></table>
+<p>The core trade-off is:</p>
+<pre><code class="language-text">row-level parallelism vs reduction and synchronization overhead
+</code></pre>
+<p>There is no single Softmax kernel that is optimal for all shapes.</p>
+<h3>Three-pass Softmax</h3>
+<p>All three kernels implement a 3-pass Softmax pattern over the input row:</p>
+<pre><code class="language-cpp">// Pass 1
+local_max = max(local_max, row_x[j]);
+
+// Pass 2
+local_sum += expf(row_x[j] - m);
+
+// Pass 3
+row_y[j] = expf(row_x[j] - m) / s;
+</code></pre>
+<p>Each element is approximately:</p>
+<ul>
+<li>Read from global memory three times.</li>
+<li>Used in <code>expf</code> twice.</li>
+<li>Written once to the output.</li>
+</ul>
+<p>This creates repeated memory traffic and repeated exponential computation.</p>
+<h3>Toward a More Efficient Two-pass Softmax</h3>
+<p>A more optimized design can compute and cache exponentials during the second pass:</p>
+<pre><code class="language-text">Pass 1:
+find maximum
+
+Pass 2:
+compute exp(x - max)
+store exponentials
+reduce sum
+
+Final:
+normalize stored exponentials
+</code></pre>
+<p>Strictly speaking, the final normalization still needs to read the stored exponentials and write the output, so the code may still have three phases. The difference is:</p>
+<pre><code class="language-text">3-pass version:
+third phase rereads x and recomputes exp
+
+cached version:
+third phase reads stored exp values and avoids recomputing exp
+</code></pre>
+<p>The trade-off is:</p>
+<pre><code class="language-text">less global loading and fewer expf computations
+                  vs
+more shared-memory/register usage
+</code></pre>
+<p>This optimization is most valuable when <code>D</code> is small enough that intermediate values can fit in registers or shared memory.</p>
+<h2>LayerNorm</h2>
+<p><img src="../assets/projects/cuda-kernels/layernorm-forward-reduction-normalize-dataflow.png" alt="CUDA LayerNorm forward reduction and normalize dataflow"></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-backward-gradient-reduction-paths.png" alt="CUDA LayerNorm backward gradient propagation and reduction paths"></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-backward-atomic-vs-two-pass-reduction.png" alt="CUDA LayerNorm backward AtomicAdd versus two-pass reduction"></p>
+<p><img src="../assets/projects/cuda-kernels/layernorm-two-pass-backward-error-root-cause.png" alt="LayerNorm two-pass backward error root cause"></p>
+<p>This LayerNorm notebook contains two major backward experiments:</p>
+<ol>
+<li>A single-kernel backward implementation that directly uses <code>atomicAdd</code> to accumulate <code>dgamma</code> and <code>dbeta</code>.</li>
+<li>A hierarchical two-pass reduction implementation that avoids heavy atomic contention by computing partial <code>dgamma</code> / <code>dbeta</code> results first, then reducing those partials.</li>
+</ol>
+<p>The default input shape is:</p>
+<pre><code class="language-text">B = 4096
+D = 1024
+</code></pre>
+<p>That is, 4096 rows and 1024 features per row. The experiment runs on a Tesla T4 with CUDA 12.x and includes CPU references for validating CUDA forward and backward outputs.</p>
+<p><strong>In this section:</strong></p>
+<ul>
+<li><a href="#layernorm-forward-formula">LayerNorm Forward Formula</a></li>
+<li><a href="#forward-kernel-one-block-per-row">Forward Kernel: One Block per Row</a></li>
+<li><a href="#backward-dx-two-row-wise-reductions">Backward dx: Two Row-wise Reductions</a></li>
+<li><a href="#backward-version-1-direct-atomic-accumulation">Backward Version 1: Direct Atomic Accumulation</a></li>
+<li><a href="#backward-version-2-two-pass-dgammadbeta-reduction">Backward Version 2: Two-pass dgamma/dbeta Reduction</a></li>
+<li><a href="#direct-atomic-vs-two-pass-reduction">Direct Atomic vs Two-pass Reduction</a></li>
+<li><a href="#layernorm-benchmark-and-validation-results">LayerNorm Benchmark and Validation Results</a></li>
+<li><a href="#correctness-verification-1">Correctness Verification</a></li>
+<li><a href="#main-layernorm-takeaways">Main LayerNorm Takeaways</a></li>
+</ul>
+<h3>LayerNorm Forward Formula</h3>
+<p>LayerNorm forward computes per-row statistics:</p>
+<pre><code class="language-text">mu_b = (1 / D) * sum_i x_{b,i}
+var_b = (1 / D) * sum_i (x_{b,i} - mu_b)^2
+inv_std_b = 1 / sqrt(var_b + eps)
+</code></pre>
+<p>Then it normalizes and applies affine parameters:</p>
+<pre><code class="language-text">y_{b,i} = gamma_i * (x_{b,i} - mu_b) * inv_std_b + beta_i
+</code></pre>
+<p>Backward computes:</p>
+<pre><code class="language-text">dx
+dgamma
+dbeta
+</code></pre>
+<p>The important systems point is that LayerNorm has reductions along two different dimensions:</p>
+<ul>
+<li>Row-wise reductions for <code>mean</code>, <code>variance</code>, and <code>dx</code>.</li>
+<li>Batch-wise reductions across rows for <code>dgamma</code> and <code>dbeta</code>.</li>
+</ul>
+<h3>Forward Kernel: One Block per Row</h3>
+<p>The forward kernel uses:</p>
+<pre><code class="language-text">one block per row
+blockIdx.x = row index
+</code></pre>
+<p>Threads inside the block read the row with a block-stride loop:</p>
+<pre><code class="language-cpp">for (int i = tid; i &lt; D; i += blockDim.x) {
+    ...
+}
+</code></pre>
+<p>In each loop iteration, neighboring threads access neighboring feature positions, so the global-memory access pattern is coalesced.</p>
+<p>The forward reduction flow is:</p>
+<pre><code class="language-text">thread-local sum and squared sum
+        ↓
+warp-level reduction with __shfl_down_sync
+        ↓
+lane 0 of each warp writes partials to shared memory
+        ↓
+__syncthreads()
+        ↓
+warp 0 reduces warp partials
+        ↓
+thread 0 computes mean, variance, and inv_std
+        ↓
+mean / inv_std are broadcast through shared memory
+        ↓
+all threads normalize, apply gamma/beta, and write output
+</code></pre>
+<p>This experiment practices the standard block-reduction pattern:</p>
+<pre><code class="language-text">thread-local accumulation
+-&gt; warp shuffle reduction
+-&gt; shared-memory block reduction
+-&gt; broadcast
+-&gt; normalization
+</code></pre>
+<p>The forward implementation is not Welford. It reduces:</p>
+<pre><code class="language-text">sum(x)
+sum(x^2)
+</code></pre>
+<p>and computes:</p>
+<pre><code class="language-cpp">variance = sum_x2 / D - mean * mean;
+</code></pre>
+<p>This is simple and fast, but less numerically stable than Welford for difficult inputs.</p>
+<h3>Backward dx: Two Row-wise Reductions</h3>
+<p>LayerNorm backward defines:</p>
+<pre><code class="language-text">xhat_i = (x_i - mean) * inv_std
+g_i = dout_i * gamma_i
+</code></pre>
+<p>Each row needs two reductions:</p>
+<pre><code class="language-text">S1 = sum_i g_i
+S2 = sum_i g_i * xhat_i
+</code></pre>
+<p>Then each element computes:</p>
+<pre><code class="language-text">dx_i = inv_std * (g_i - S1 / D - xhat_i * S2 / D)
+</code></pre>
+<p>The CUDA kernel reduces <code>S1</code> and <code>S2</code> together:</p>
+<pre><code class="language-cpp">s1 = warpReduceSum(s1);
+s2 = warpReduceSum(s2);
+</code></pre>
+<p>and then merges warp partials through shared memory before each thread finalizes its own <code>dx_i</code>.</p>
+<p>This is a useful interview point:</p>
+<pre><code class="language-text">LayerNorm backward is reduction-heavy. Computing dx requires two row-wise
+reductions before each element can be finalized.
+</code></pre>
+<h3>Backward Version 1: Direct Atomic Accumulation</h3>
+<p>The first backward version directly accumulates <code>dgamma</code> and <code>dbeta</code> inside the same backward kernel:</p>
+<pre><code class="language-cpp">atomicAdd(&amp;dbeta[i], dyi);
+atomicAdd(&amp;dgamma[i], dyi * xhat);
+</code></pre>
+<p>The math is:</p>
+<pre><code class="language-text">dbeta_i  = sum_b dout_{b,i}
+dgamma_i = sum_b dout_{b,i} * xhat_{b,i}
+</code></pre>
+<p>For each feature <code>i</code>, all 4096 rows update the same <code>dbeta[i]</code> and <code>dgamma[i]</code> addresses. With <code>B=4096</code> and <code>D=1024</code>, this creates roughly:</p>
+<pre><code class="language-text">4096 * 1024 * 2 = 8.39 million atomic additions
+</code></pre>
+<p>More importantly, those atomics contend for only 1024 <code>dgamma</code> addresses and 1024 <code>dbeta</code> addresses.</p>
+<p>The profiled result at the default scale is:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th align="right">Time</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Forward</td>
+<td align="right">0.2128 ms</td>
+</tr>
+<tr>
+<td>Backward with direct atomics</td>
+<td align="right">13.0604 ms</td>
+</tr>
+</tbody></table>
+<p>The backward is about:</p>
+<pre><code class="language-text">13.0604 / 0.2128 ~= 61.4x slower than forward
+</code></pre>
+<p>This does not mean that the LayerNorm backward formula is intrinsically 61x more expensive than forward. The dominant issue is global-memory atomic contention on <code>dgamma</code> and <code>dbeta</code>.</p>
+<p>The key lesson is:</p>
+<pre><code class="language-text">A mathematically correct GPU implementation may still perform extremely poorly
+if many thread blocks atomically update the same global-memory locations.
+</code></pre>
+<h3>Backward Version 2: Two-pass dgamma/dbeta Reduction</h3>
+<p>The second backward design splits the work into three kernels:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Kernel 1</td>
+<td>Compute <code>dx</code> with one block per row.</td>
+</tr>
+<tr>
+<td>Kernel 2</td>
+<td>Compute partial <code>dgamma</code> and <code>dbeta</code> over batch tiles.</td>
+</tr>
+<tr>
+<td>Kernel 3</td>
+<td>Reduce partial results into final <code>dgamma</code> and <code>dbeta</code>.</td>
+</tr>
+</tbody></table>
+<p>Kernel 1 computes <code>S1</code>, <code>S2</code>, and <code>dx</code> per row. It does not require cross-batch reduction and does not need atomics.</p>
+<p>Kernel 2 tiles the batch and feature dimensions. The notebook uses:</p>
+<pre><code class="language-cpp">TILE_D = 256;
+TILE_N = 128;
+</code></pre>
+<p>For:</p>
+<pre><code class="language-text">B = 4096
+</code></pre>
+<p>the number of partial groups is:</p>
+<pre><code class="language-text">P = ceil(4096 / 128) = 32
+</code></pre>
+<p>Instead of 4096 rows atomically updating one final value, every 128 rows first produce partial outputs:</p>
+<pre><code class="language-text">dgamma_partial[p][i]
+dbeta_partial[p][i]
+</code></pre>
+<p>There are 32 groups of partial results. Kernel 3 then reduces, for each feature:</p>
+<pre><code class="language-text">32 partial values -&gt; final dgamma[i], dbeta[i]
+</code></pre>
+<p>The direct atomic reduction is replaced by:</p>
+<pre><code class="language-text">parallel local accumulation
+-&gt; partial global results
+-&gt; final reduction
+</code></pre>
+<p>This is the standard hierarchical reduction idea applied to LayerNorm parameter gradients.</p>
+<h3>Direct Atomic vs Two-pass Reduction</h3>
+<table>
+<thead>
+<tr>
+<th>Design</th>
+<th>Advantage</th>
+<th>Problem</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Direct atomic</td>
+<td>Simple implementation; one backward kernel.</td>
+<td>Severe contention when many rows update the same small set of feature-gradient addresses.</td>
+</tr>
+<tr>
+<td>Two-pass reduction</td>
+<td>Greatly reduces contention and scales better with larger batch size.</td>
+<td>Requires multiple kernels, an additional partial buffer, and extra global-memory passes.</td>
+</tr>
+</tbody></table>
+<p>The lesson is not &quot;atomics are always bad.&quot; A direct atomic approach can be acceptable when contention is low, such as very small batch sizes. But when thousands of blocks update the same small output vector, atomics become a major bottleneck.</p>
+<h3>LayerNorm Benchmark and Validation Results</h3>
+<p>Benchmark setting from notebook: Tesla T4, <code>B=4096</code>, <code>D=1024</code>.</p>
+<table>
+<thead>
+<tr>
+<th>LayerNorm kernel</th>
+<th>Correctness</th>
+<th align="right">Time</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Forward with direct-atomic backward experiment</td>
+<td>PASS</td>
+<td align="right">0.2128 ms</td>
+<td>One block per row, row-wise reductions.</td>
+</tr>
+<tr>
+<td>Backward with direct atomic <code>dgamma/dbeta</code></td>
+<td>Profiled</td>
+<td align="right">13.0604 ms</td>
+<td>Dominated by atomic contention.</td>
+</tr>
+<tr>
+<td>Warp-based forward</td>
+<td>PASS</td>
+<td align="right">0.2119 ms</td>
+<td>One optimized forward path.</td>
+</tr>
+<tr>
+<td>Warp-based backward</td>
+<td>PASS</td>
+<td align="right">0.2916 ms</td>
+<td>Backward gradients pass correctness checks in the recorded run.</td>
+</tr>
+<tr>
+<td>Two-pass forward</td>
+<td>PASS</td>
+<td align="right">0.2118 ms</td>
+<td>Similar forward speed.</td>
+</tr>
+<tr>
+<td>Two-pass backward total</td>
+<td>FAIL in notebook</td>
+<td align="right">0.6136 ms</td>
+<td>Shows the complexity of implementing correct multi-kernel backward reductions.</td>
+</tr>
+<tr>
+<td>Mixed precision, FP32 reduction</td>
+<td>Accuracy checked</td>
+<td align="right">0.1811 ms</td>
+<td>Faster and more accurate than low-precision reduction.</td>
+</tr>
+<tr>
+<td>Pure low-precision reduction</td>
+<td>Accuracy checked</td>
+<td align="right">0.2149 ms</td>
+<td>Higher error and slower in this run.</td>
+</tr>
+</tbody></table>
+<p>The direct-atomic result explains why a single-kernel implementation can be dramatically slower. The later optimized/variant results show that faster backward paths are possible, but also that multi-kernel backward reductions are easier to get wrong and require careful validation.</p>
+<p>The mixed-precision experiments show why numerical precision matters. FP32 reductions with FP16 IO gave lower error and faster runtime than pure low-precision reduction in the tested configuration.</p>
+<h3>Correctness Verification</h3>
+<p>The CPU reference is compared against CUDA outputs for:</p>
+<ul>
+<li>Forward output <code>y</code>.</li>
+<li>Row <code>mean</code>.</li>
+<li>Row <code>inv_std</code>.</li>
+<li>Backward <code>dx</code>.</li>
+<li><code>dgamma</code>.</li>
+<li><code>dbeta</code>.</li>
+</ul>
+<p>Typical tolerances:</p>
+<table>
+<thead>
+<tr>
+<th>Quantity</th>
+<th align="right">Tolerance</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Forward <code>y</code></td>
+<td align="right"><code>1e-3</code></td>
+</tr>
+<tr>
+<td><code>mean</code> / <code>inv_std</code></td>
+<td align="right"><code>1e-4</code></td>
+</tr>
+<tr>
+<td>Backward outputs</td>
+<td align="right"><code>1e-2</code></td>
+</tr>
+</tbody></table>
+<p>The two-pass version executes:</p>
+<pre><code class="language-text">ln_forward_warp
+ln_backward_dx_warp
+ln_dg_db_partials
+ln_reduce_partials
+</code></pre>
+<p>and then compares results with the CPU reference.</p>
+<h3>Main LayerNorm Takeaways</h3>
+<table>
+<thead>
+<tr>
+<th>Takeaway</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Forward maps naturally to one block per row</td>
+<td>Each row&#39;s mean and variance are independent, so reductions can stay inside a block.</td>
+</tr>
+<tr>
+<td>Warp shuffle plus shared memory is the standard block-reduction pattern</td>
+<td>Warp-local reductions use <code>__shfl_down_sync</code>; cross-warp partials go through shared memory and <code>__syncthreads()</code>.</td>
+</tr>
+<tr>
+<td>Backward is more complex than forward</td>
+<td><code>dx</code> requires row-wise reductions, while <code>dgamma/dbeta</code> require reductions across the batch dimension.</td>
+</tr>
+<tr>
+<td>Direct atomics can be catastrophically slow</td>
+<td>At <code>B=4096, D=1024</code>, millions of atomic updates contend for only 1024 feature-gradient addresses.</td>
+</tr>
+<tr>
+<td>Hierarchical reduction is the scalable pattern</td>
+<td>Partial <code>dgamma/dbeta</code> buffers reduce contention, then a final kernel reduces partials.</td>
+</tr>
+<tr>
+<td>Numerical precision matters</td>
+<td>FP32 reductions with FP16 IO can improve both accuracy and runtime compared with lower-precision reductions.</td>
+</tr>
+</tbody></table>
+<h2>PyTorch C++/CUDA Extensions</h2>
+<p>The project also integrates CUDA kernels with PyTorch through C++/CUDA extensions:</p>
+<ul>
+<li>TensorAccessor-based extension loading.</li>
+<li>Forward-only extension path.</li>
+<li>Forward/backward LayerNorm extension.</li>
+<li>Autograd wrapper validation.</li>
+<li>Fused Bias+GELU extension.</li>
+</ul>
+<p>Selected validation results:</p>
+<table>
+<thead>
+<tr>
+<th>Extension</th>
+<th>Test</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TensorAccessor extension</td>
+<td><code>B=256, D=1024</code></td>
+<td><code>allclose=True</code>, max absolute error <code>0.0</code></td>
+</tr>
+<tr>
+<td>TensorAccessor benchmark</td>
+<td><code>B=4096, D=1024</code>, 200 iterations</td>
+<td><code>0.156652 ms/iter</code></td>
+</tr>
+<tr>
+<td>LayerNorm extension gradients</td>
+<td><code>dx</code>, <code>dgamma</code>, <code>dbeta</code></td>
+<td>allclose true, max abs errors around <code>4.77e-07</code> to <code>9.54e-07</code></td>
+</tr>
+<tr>
+<td>Fused Bias+GELU, FP32</td>
+<td><code>B=256, D=1024</code></td>
+<td>max error <code>4.73e-04</code></td>
+</tr>
+<tr>
+<td>Fused Bias+GELU, FP16</td>
+<td><code>B=256, D=1024</code></td>
+<td>max error <code>3.91e-03</code></td>
+</tr>
+</tbody></table>
+<h2>Naive Attention and IO-Bound Analysis</h2>
+<p>The attention notes explain the full attention pipeline:</p>
+<pre><code class="language-text">Q = X Wq
+K = X Wk
+V = X Wv
+Scores = Q K^T
+P = softmax(Scores)
+O = P V
+</code></pre>
+<p><img src="../assets/projects/cuda-kernels/attention-qkv.png" alt="Attention QKV construction"></p>
+<p><img src="../assets/projects/cuda-kernels/attention-output.png" alt="Attention output computation"></p>
+<p>For a naive attention implementation, the project uses a block-per-row tiling strategy where each program/block computes one row or block of rows of the attention score matrix.</p>
+<p><img src="../assets/projects/cuda-kernels/attention-tiling.png" alt="Attention tiling"></p>
+<p>The notes derive why naive attention can be IO-bound. For <code>n=2048</code>, <code>d=64</code>, FP16:</p>
+<ul>
+<li>Attention score computation is roughly <code>4 * n^2 * d</code>, around <code>1.07e9</code> FLOPs.</li>
+<li>Materializing score/probability matrices creates roughly <code>4 * n^2</code> FP16 elements of S/P traffic, about 33.5 MB just for those intermediate matrices.</li>
+<li>Arithmetic intensity is about 32 FLOPs/byte.</li>
+<li>On a T4-style roofline with FP16 peak around 65 TFLOP/s and memory bandwidth around 320 GB/s, the ridge point is about 203 FLOPs/byte.</li>
+</ul>
+<p>Since <code>32 &lt;&lt; 203</code>, naive attention lies on the memory-bound side of the roofline.</p>
+<p><img src="../assets/projects/cuda-kernels/attention-roofline.png" alt="Attention roofline analysis"></p>
+<h2>Profiling Focus</h2>
+<p><img src="../assets/projects/cuda-kernels/nsight-compute-profiling-workflow.png" alt="CUDA Nsight Compute profiling workflow from runtime symptom to root cause"></p>
+<p><img src="../assets/projects/cuda-kernels/nsight-matmul-root-cause-analysis.png" alt="CUDA MatMul Nsight root-cause analysis for Tile16, Tile32, and Tile32 with padding"></p>
+<p>The project uses Nsight Compute concepts to connect code changes with GPU behavior:</p>
+<ul>
+<li>Memory workload analysis.</li>
+<li>Source counters.</li>
+<li>Warp state statistics.</li>
+<li>Scheduler statistics.</li>
+<li>DRAM throughput.</li>
+<li>SM utilization.</li>
+<li>Memory dependency stalls.</li>
+</ul>
+<p>For IO-bound kernels, the expected profiling signature is high DRAM activity, lower achieved FLOPs relative to peak, and stalls related to memory dependencies.</p>
+<h2>Main Takeaways</h2>
+<ul>
+<li>Shared memory tiling gives a large MatMul speedup only when access patterns avoid bank conflicts.</li>
+<li>Padding can turn a slow Tile32 shared-memory kernel into the best MatMul variant.</li>
+<li>Loop unrolling and register reuse provide moderate gains by reducing loop overhead and improving instruction scheduling.</li>
+<li>Softmax strategy depends on row width: warp-per-row is strong for small rows, while multiwarp-per-row is better for long rows.</li>
+<li>LayerNorm performance depends on both reduction strategy and numerical precision.</li>
+<li>PyTorch C++/CUDA extensions require both kernel correctness and integration correctness through autograd checks.</li>
+<li>Naive attention is memory-bound because it materializes large score/probability matrices with low arithmetic intensity relative to GPU roofline.</li>
+</ul>
+<h2>Experiment Result Analysis</h2>
+<p>The MatMul results show the clearest optimization ladder. Moving from naive global-memory access to block tiling gives a 2.26x speedup. Adding shared-memory tiling with <code>TILE=16</code> increases speedup to 3.73x. However, <code>TILE=32</code> without padding becomes slower than the naive baseline because bank conflicts and unfavorable memory access patterns outweigh the theoretical reuse benefit. Once padding is added, the Tile32 kernel becomes the best result at 4.38x speedup.</p>
+<p>The Softmax results show that there is no single best mapping for every shape. Small rows benefit from warp-per-row because a single warp can reduce the row efficiently with low coordination overhead. Large rows benefit from multiwarp-per-row because one warp is not enough parallelism for the row width, and multiple cooperating warps improve memory throughput.</p>
+<p>LayerNorm demonstrates the interaction between performance and numerical correctness. A fast kernel is not useful unless the backward pass and reductions are correct. The mixed-precision experiment is especially important: FP32 reductions with FP16 IO achieved both better accuracy and better runtime than pure low-precision reduction in this run.</p>
+<p>The attention analysis connects the operator-level work to a roofline model. Naive attention performs substantial compute, but it also materializes large intermediate score and probability matrices. The arithmetic-intensity estimate places it on the memory-bound side of the T4 roofline, explaining why IO-aware attention kernels such as FlashAttention avoid materializing the full attention matrix and instead tile Q/K/V through faster memory.</p>
+<p>Overall, this project shows how CUDA optimization is not one trick. Performance comes from matching the kernel strategy to the operator shape, memory hierarchy, numerical constraints, and profiler evidence.</p>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>

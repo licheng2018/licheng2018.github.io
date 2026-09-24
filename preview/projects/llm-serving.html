@@ -1,0 +1,771 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LLM Inference Serving Benchmark</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>LLM Inference Serving Benchmark</h1>
+<p>This project builds a lightweight benchmark and analysis workflow for LLM inference serving. The goal is to explain how prompt length, output length, prefill, decode, queueing, batching, and concurrency affect user-visible latency and serving throughput.</p>
+<p><a href="../assets/projects/llm-serving/serving-bench.pdf">Download the original slides PDF</a></p>
+<p>Source repo: <a href="https://github.com/licheng2018/serving-benchmark/tree/main">github</a></p>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Jump to sections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Overview</td>
+<td><a href="#project-goal">Project Goal</a> · <a href="#experimental-setup">Experimental Setup</a> · <a href="#benchmark-design">Benchmark Design</a></td>
+</tr>
+<tr>
+<td>Serving Metrics</td>
+<td><a href="#llm-serving-pipeline">LLM Serving Pipeline</a> · <a href="#metrics">Metrics</a> · <a href="#time-to-first-token">Time to First Token</a> · <a href="#time-per-output-token">Time Per Output Token</a> · <a href="#tokens-per-second-and-requests-per-second">Tokens Per Second and Requests Per Second</a> · <a href="#end-to-end-request-latency">End-to-End Request Latency</a> · <a href="#p95-latency">P95 Latency</a></td>
+</tr>
+<tr>
+<td>Prefill and Decode</td>
+<td><a href="#metric-timeline-summary">Metric Timeline Summary</a> · <a href="#prefill">Prefill</a> · <a href="#decode">Decode</a> · <a href="#prefill-vs-decode">Prefill vs. Decode</a> · <a href="#kv-cache-interpretation">KV Cache Interpretation</a></td>
+</tr>
+<tr>
+<td>Experiments</td>
+<td><a href="#concurrency">Concurrency</a> · <a href="#benchmark-repository-results">Benchmark Repository Results</a> · <a href="#ttft-vs-prompt-length">TTFT vs. Prompt Length</a> · <a href="#tpot-vs-output-length">TPOT vs. Output Length</a> · <a href="#throughput-vs-concurrency">Throughput vs. Concurrency</a> · <a href="#latency-vs-concurrency">Latency vs. Concurrency</a></td>
+</tr>
+<tr>
+<td>Review</td>
+<td><a href="#benchmark-limitations-and-scope">Benchmark Limitations and Scope</a> · <a href="#main-takeaways">Main Takeaways</a> · <a href="#skills-demonstrated">Skills Demonstrated</a> · <a href="#experiment-result-analysis">Experiment Result Analysis</a></td>
+</tr>
+</tbody></table>
+<h2>Project Goal</h2>
+<p><img src="../assets/projects/llm-serving/llm-inference-serving-e2e-benchmark-pipeline.png" alt="LLM inference serving end-to-end benchmark pipeline"></p>
+<p><img src="../assets/projects/llm-serving/llm-inference-prefill-vs-decode.png" alt="LLM inference prefill versus decode"></p>
+<p><img src="../assets/projects/llm-serving/llm-inference-kv-cache-concurrency-oom-risk.png" alt="LLM inference KV cache, concurrency, and OOM risk"></p>
+<p><img src="../assets/projects/llm-serving/serving-load-batch-concurrency-latency-throughput-tradeoff.png" alt="Serving load trade-off for batch, concurrency, TTFT, TPOT, and throughput"></p>
+<p>The project focuses on practical serving metrics rather than model accuracy. It studies what happens after a user sends a prompt to an inference service:</p>
+<ul>
+<li>How long the user waits before the first token appears.</li>
+<li>How quickly later tokens are generated.</li>
+<li>How total request latency is built from prefill and decode stages.</li>
+<li>How concurrency changes queueing delay, batching opportunities, and GPU contention.</li>
+<li>Which metrics are useful for diagnosing serving bottlenecks.</li>
+</ul>
+<p><img src="../assets/projects/llm-serving/llm-pipeline.png" alt="LLM pipeline"></p>
+<h2>Experimental Setup</h2>
+<p>The benchmark uses a single-GPU Hugging Face inference baseline to study model-side serving behavior under controlled prompt length, output length, and concurrency settings.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Setting</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU</td>
+<td>1 x Tesla T4, 15 GB</td>
+</tr>
+<tr>
+<td>Model</td>
+<td><code>Qwen/Qwen2.5-0.5B-Instruct</code></td>
+</tr>
+<tr>
+<td>Precision</td>
+<td>FP16</td>
+</tr>
+<tr>
+<td>Framework</td>
+<td>Hugging Face Transformers</td>
+</tr>
+<tr>
+<td>Device</td>
+<td>Single CUDA GPU</td>
+</tr>
+<tr>
+<td>Decoding</td>
+<td>Greedy decoding</td>
+</tr>
+<tr>
+<td>Sampling</td>
+<td><code>do_sample=False</code></td>
+</tr>
+<tr>
+<td>KV cache</td>
+<td><code>use_cache=True</code></td>
+</tr>
+</tbody></table>
+<p>The model is loaded in FP16 and placed on GPU:</p>
+<pre><code class="language-python">model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16
+)
+
+model = model.to(&quot;cuda&quot;)
+model.eval()
+</code></pre>
+<p>Generation uses deterministic greedy decoding:</p>
+<pre><code class="language-python">do_sample = False
+use_cache = True
+</code></pre>
+<p>This avoids random sampling noise and enables the KV cache so decode does not recompute historical K/V projections for every generated token.</p>
+<p>This project is different from the distributed training project:</p>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>Focus</th>
+<th>Main metrics</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>gpt_training</code></td>
+<td>Training performance with DDP/FSDP/gradient accumulation</td>
+<td>step time, tokens/sec, peak memory</td>
+</tr>
+<tr>
+<td><code>serving-benchmark</code></td>
+<td>Inference serving performance</td>
+<td>TTFT, TPOT, latency, throughput, concurrency behavior</td>
+</tr>
+</tbody></table>
+<p>The current repository implements the FP16 Hugging Face baseline, length sweeps, and concurrency benchmark. It should not be described as already containing completed AWQ, GPTQ, INT8, or FP8 comparison results unless those experiments are later implemented and saved.</p>
+<h2>Benchmark Design</h2>
+<p>The benchmark has three main parts:</p>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Notebook / workflow</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Minimal benchmark</td>
+<td><code>1.minimal_benchmark copy.ipynb</code></td>
+<td>Sanity-check model loading, tokenization, generation, timing, FP16 execution, and KV-cache use.</td>
+</tr>
+<tr>
+<td>Prompt/output length sweep</td>
+<td><code>2_sweep_benchmark.ipynb</code></td>
+<td>Measure how input length affects TTFT and how output length affects decode latency and total latency.</td>
+</tr>
+<tr>
+<td>Concurrency benchmark</td>
+<td><code>3_concurrency_benchmark.ipynb</code></td>
+<td>Measure how simultaneous requests affect wall time, average latency, P95 latency, requests/sec, and tokens/sec.</td>
+</tr>
+</tbody></table>
+<p>The minimal benchmark uses a prompt such as:</p>
+<pre><code class="language-text">Explain the role of attention in transformer models.
+</code></pre>
+<p>It is mainly a pipeline sanity check:</p>
+<ul>
+<li>The model loads successfully on the T4.</li>
+<li>Tokenizer and model inputs are correct.</li>
+<li><code>generate()</code> runs without NaN or OOM.</li>
+<li>FP16 inference works.</li>
+<li>Output text is reasonable.</li>
+<li>KV cache can be enabled.</li>
+</ul>
+<p>The sweep benchmark uses:</p>
+<pre><code class="language-text">prompt_lengths = [32, 128, 512, 1024]
+output_lengths = [32, 64, 128, 256]
+num_runs = 3
+num_warmup = 1
+concurrency = 1
+use_kv_cache = True
+</code></pre>
+<p>Prompt length and output length are swept separately because they stress different stages:</p>
+<table>
+<thead>
+<tr>
+<th>Sweep</th>
+<th>Fixed variable</th>
+<th>Changed variable</th>
+<th>Expected effect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Prompt-length sweep</td>
+<td>Output length fixed</td>
+<td>Prompt length: 32, 128, 512, 1024</td>
+<td>Longer prompts increase prefill work, KV-cache initialization, and TTFT.</td>
+</tr>
+<tr>
+<td>Output-length sweep</td>
+<td>Prompt length fixed</td>
+<td>Output length: 32, 64, 128, 256</td>
+<td>Longer outputs increase decode steps and end-to-end latency.</td>
+</tr>
+</tbody></table>
+<p>The concurrency benchmark fixes the workload and changes the number of simultaneous requests:</p>
+<pre><code class="language-text">input tokens = 128
+output tokens = 64
+total requests = 20
+concurrency = 1, 2, 4, 8, 16
+</code></pre>
+<p>For each setting, the benchmark records:</p>
+<table>
+<thead>
+<tr>
+<th>Recorded field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Wall time</td>
+<td>Total time to finish the request set.</td>
+</tr>
+<tr>
+<td>Average latency</td>
+<td>Mean per-request end-to-end latency.</td>
+</tr>
+<tr>
+<td>P95 latency</td>
+<td>Tail latency threshold for the slowest normal requests.</td>
+</tr>
+<tr>
+<td>Requests/sec</td>
+<td>Completed requests per second.</td>
+</tr>
+<tr>
+<td>Output tokens/sec</td>
+<td>Aggregate generated token throughput.</td>
+</tr>
+<tr>
+<td>Per-request records</td>
+<td>Individual request latency and output-token speed.</td>
+</tr>
+</tbody></table>
+<h2>LLM Serving Pipeline</h2>
+<p>An LLM request generally moves through:</p>
+<ol>
+<li>Prompt submission.</li>
+<li>Tokenization.</li>
+<li>Prefill / initial prompt processing.</li>
+<li>KV-cache construction.</li>
+<li>First-token generation.</li>
+<li>Iterative decode.</li>
+<li>Detokenization and response streaming.</li>
+</ol>
+<p>This pipeline matters because different stages stress the system in different ways. Prefill processes the full prompt, while decode generates one token at a time and repeatedly reads the KV cache.</p>
+<h2>Metrics</h2>
+<p>The benchmark tracks the metrics that matter most for interactive inference serving.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Meaning</th>
+<th>Main bottleneck captured</th>
+<th>User-facing interpretation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TTFT</td>
+<td>Time to first token</td>
+<td>Queueing, tokenization, prefill compute, first-token sampling, scheduler overhead</td>
+<td>How long the user waits before seeing the model start responding</td>
+</tr>
+<tr>
+<td>TPOT</td>
+<td>Time per output token</td>
+<td>Decode speed, KV-cache reads/writes, memory bandwidth, decode batch size</td>
+<td>How fast the response streams after the first token</td>
+</tr>
+<tr>
+<td>TPS</td>
+<td>Tokens per second</td>
+<td>Aggregate generation throughput</td>
+<td>How much token work the system can sustain</td>
+</tr>
+<tr>
+<td>Requests/sec</td>
+<td>Completed requests per second</td>
+<td>System-level throughput</td>
+<td>How many user requests the service can finish per unit time</td>
+</tr>
+<tr>
+<td>E2E latency</td>
+<td>End-to-end request latency</td>
+<td>Full request lifecycle</td>
+<td>Total time from prompt submission to final response</td>
+</tr>
+<tr>
+<td>P95 latency</td>
+<td>95th percentile latency</td>
+<td>Tail latency under load</td>
+<td>How slow the slowest normal requests feel</td>
+</tr>
+</tbody></table>
+<h2>Time to First Token</h2>
+<p>TTFT is the time from submitting a query to receiving the first output token. It generally includes request queueing time, network overhead, tokenization, prefill computation, first-token sampling or selection, and scheduler overhead.</p>
+<p>Longer prompts usually increase TTFT because attention must process the full input sequence and create the initial KV cache before generation can begin.</p>
+<p><img src="../assets/projects/llm-serving/ttft-timeline.png" alt="TTFT timeline"></p>
+<p>Key contributors:</p>
+<ul>
+<li>Request queueing time.</li>
+<li>Network overhead.</li>
+<li>Tokenization time.</li>
+<li>Prefill computation time.</li>
+<li>First-token sampling or selection time.</li>
+<li>Scheduler overhead.</li>
+</ul>
+<h2>Time Per Output Token</h2>
+<p>TPOT is the average time required to generate each token after the first token. It mainly reflects sustained decode-stage generation speed.</p>
+<p><img src="../assets/projects/llm-serving/tpot-diagram.png" alt="TPOT diagram"></p>
+<p>Important factors:</p>
+<ul>
+<li>Model size.</li>
+<li>Decode batch size.</li>
+<li>KV-cache length.</li>
+<li>Memory bandwidth.</li>
+<li>GPU utilization.</li>
+<li>Sampling strategy.</li>
+<li>Scheduler overhead.</li>
+<li>Concurrency.</li>
+</ul>
+<p>Unlike prefill, decode is sequential across output tokens. It is often memory-bound because each decode step reads cached K/V values and writes the newly generated token state.</p>
+<h2>Tokens Per Second and Requests Per Second</h2>
+<p>Tokens per second measures aggregate generation throughput. Requests per second measures how many full requests the service completes. Both are throughput metrics, but they answer different questions:</p>
+<ul>
+<li>TPS is useful when output lengths vary and token workload is the main concern.</li>
+<li>Requests/sec is useful when user-facing request completion rate is the main concern.</li>
+</ul>
+<p><img src="../assets/projects/llm-serving/tps-requests-timeline.png" alt="TPS and requests/sec timeline"></p>
+<h2>End-to-End Request Latency</h2>
+<p>End-to-end latency measures the full time to process the input and generate all output tokens.</p>
+<p><img src="../assets/projects/llm-serving/e2e-latency-diagram.png" alt="End-to-end latency diagram"></p>
+<p>This includes both the prefill stage and the decode stage:</p>
+<pre><code class="language-text">request starts
+-&gt; prompt received
+-&gt; first token
+-&gt; token 2
+-&gt; token 3
+-&gt; ...
+-&gt; final response
+</code></pre>
+<h2>P95 Latency</h2>
+<p>Average latency can hide slow requests. P95 latency captures the latency threshold below which 95% of requests finish. It is a better signal for tail behavior in serving systems.</p>
+<p><img src="../assets/projects/llm-serving/p95-latency.png" alt="P95 latency explanation"></p>
+<p>P95 is important because production users often feel the tail, not the mean. A system can have acceptable average latency while still producing slow responses under contention, long prompts, or queueing spikes.</p>
+<h2>Metric Timeline Summary</h2>
+<pre><code class="language-text">Request starts
+     |
+     |&lt;----------- TTFT -----------&gt;|
+     |                              |
+     v                              v
+Prompt received                First token
+                                   |
+                                   |&lt;-- TPOT --&gt;|&lt;-- TPOT --&gt;|&lt;-- TPOT --&gt;|
+                                   v            v            v
+                                token 2      token 3      token 4
+                                                                |
+                                                                v
+                                                          Final response
+
+|&lt;-------------------- End-to-end latency --------------------&gt;|
+</code></pre>
+<h2>Prefill</h2>
+<p>Prefill processes the full input prompt and builds the initial KV cache before generating the first token.</p>
+<p><img src="../assets/projects/llm-serving/prefill-attention.png" alt="Prefill attention diagram"></p>
+<p>For prompt tokens:</p>
+<pre><code class="language-text">x1, x2, x3, ..., xN
+</code></pre>
+<p>prefill performs:</p>
+<ul>
+<li>Full prompt processing.</li>
+<li>Q/K/V computation for the prompt.</li>
+<li>Initial KV-cache construction.</li>
+<li>First-token generation.</li>
+</ul>
+<p>TTFT mainly reflects the cost of prefill and system responsiveness. Longer prompt length means more prefill computation, larger attention cost, and higher TTFT.</p>
+<p>Example:</p>
+<table>
+<thead>
+<tr>
+<th align="right">Prompt length</th>
+<th align="right">Prefill work</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">32 tokens</td>
+<td align="right">Prefill processes 32 tokens</td>
+</tr>
+<tr>
+<td align="right">1024 tokens</td>
+<td align="right">Prefill processes 1024 tokens</td>
+</tr>
+</tbody></table>
+<p>Prefill bottlenecks include:</p>
+<ul>
+<li>Compute.</li>
+<li>Large attention computation.</li>
+<li>Matrix multiplication.</li>
+<li>Activation memory.</li>
+<li>Prefill batch size.</li>
+</ul>
+<h2>Decode</h2>
+<p>Decode starts after the first token and KV cache exist. Each step reads cached K/V values, processes the previous generated token, appends new K/V, and emits the next token.</p>
+<pre><code class="language-text">First token y1 + KV cache
+-&gt; decode step 1: input y1, read cached K/V, generate y2, append new K/V
+-&gt; decode step 2: generate y3
+-&gt; decode step 3: generate y4
+</code></pre>
+<p>TPOT mainly reflects the sustained generation speed of this decode stage.</p>
+<h2>KV Cache Interpretation</h2>
+<p>The benchmark enables:</p>
+<pre><code class="language-text">use_cache=True
+</code></pre>
+<p>When generating token <code>t</code>, the model does not need to recompute the K/V projections for all previous tokens. Instead, it:</p>
+<pre><code class="language-text">computes Q, K, V for the new token
+appends the new K/V to the cache
+uses the new Q to attend over historical K/V
+reads historical V to produce the output
+</code></pre>
+<p>KV cache saves repeated K/V projection work for historical tokens. However, it does not make decode independent of context length. Each decode step still attends over a growing cache:</p>
+<pre><code class="language-text">context length increases
+        ↓
+KV-cache memory increases
+        ↓
+each decode step reads more K/V
+        ↓
+TPOT may gradually increase
+</code></pre>
+<h2>Prefill vs. Decode</h2>
+<p><img src="../assets/projects/llm-serving/prefill-decode-table.png" alt="Prefill vs decode comparison table"></p>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Prefill</th>
+<th>Decode</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Main purpose</td>
+<td>Process the full input prompt before generation starts</td>
+<td>Generate output tokens one by one</td>
+</tr>
+<tr>
+<td>When it happens</td>
+<td>Before the first output token</td>
+<td>After the first output token</td>
+</tr>
+<tr>
+<td>Input</td>
+<td>All prompt tokens at once</td>
+<td>Latest generated token plus KV cache</td>
+</tr>
+<tr>
+<td>Output</td>
+<td>First output token and initial KV cache</td>
+<td>Next output token and updated KV cache</td>
+</tr>
+<tr>
+<td>Related metric</td>
+<td>Mainly affects TTFT</td>
+<td>Mainly affects TPOT and total generation latency</td>
+</tr>
+<tr>
+<td>Parallelism</td>
+<td>Highly parallel across prompt tokens</td>
+<td>Sequential across output tokens</td>
+</tr>
+<tr>
+<td>Computation pattern</td>
+<td>Large matrix operations over the full prompt</td>
+<td>Repeated small steps, one token at a time</td>
+</tr>
+<tr>
+<td>Bottleneck tendency</td>
+<td>More compute-bound</td>
+<td>More memory-bound</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/llm-serving/prefill-decode-analysis-table.png" alt="Prefill and decode analysis table"></p>
+<h2>Concurrency</h2>
+<p>Concurrency means multiple tasks are in progress at the same time. Parallelism means multiple tasks are physically executed at the exact same time.</p>
+<p><img src="../assets/projects/llm-serving/concurrency-vs-parallelism.png" alt="Concurrency vs parallelism"></p>
+<p>Concurrency affects serving in several ways:</p>
+<table>
+<thead>
+<tr>
+<th>Serving stage</th>
+<th>Concurrency effect</th>
+<th>Metric impact</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Prefill queueing</td>
+<td>Request arrives, waits in queue, then prefill starts</td>
+<td>Increases TTFT</td>
+</tr>
+<tr>
+<td>Prefill contention</td>
+<td>Multiple requests may need prefill at the same time</td>
+<td>Raises compute contention and first-token delay</td>
+</tr>
+<tr>
+<td>Batching delay</td>
+<td>The scheduler may wait briefly to collect more requests</td>
+<td>Can increase TTFT but improve throughput</td>
+</tr>
+<tr>
+<td>Decode batching</td>
+<td>Concurrent decode requests can be batched</td>
+<td>Can improve GPU utilization and token throughput</td>
+</tr>
+</tbody></table>
+<p>This creates a latency-throughput trade-off. More concurrency can improve utilization, but it can also increase queueing delay and tail latency.</p>
+<h2>Benchmark Repository Results</h2>
+<p>The full benchmark repository includes three notebooks and saved result artifacts:</p>
+<ul>
+<li><a href="https://github.com/licheng2018/serving-benchmark/blob/main/1.minimal_benchmark%20copy.ipynb">1.minimal_benchmark copy.ipynb</a></li>
+<li><a href="https://github.com/licheng2018/serving-benchmark/blob/main/2_sweep_benchmark.ipynb">2_sweep_benchmark.ipynb</a></li>
+<li><a href="https://github.com/licheng2018/serving-benchmark/blob/main/3_concurrency_benchmark.ipynb">3_concurrency_benchmark.ipynb</a></li>
+<li><a href="../assets/projects/llm-serving/repo-prompt-sweep-summary.json">prompt_sweep_summary.json</a></li>
+<li><a href="../assets/projects/llm-serving/repo-output-sweep-summary.json">output_sweep_summary.json</a></li>
+<li><a href="../assets/projects/llm-serving/repo-concurrency-sweep-summary.json">concurrency_sweep_summary.json</a></li>
+</ul>
+<p>The repo contains four result plots: TTFT vs. prompt length, TPOT vs. output length, throughput vs. concurrency, and average latency vs. concurrency. These result images are included here so the project page reflects the actual benchmark outputs rather than only the slide-level explanation.</p>
+<h3>TTFT vs. Prompt Length</h3>
+<p><img src="../assets/projects/llm-serving/repo-ttft-vs-prompt-length.png" alt="TTFT vs prompt length"></p>
+<p>Prompt sweep setting: fixed output length of 64 generated tokens.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Prompt length (tokens)</th>
+<th align="right">Average TTFT (sec)</th>
+<th align="right">Average total latency (sec)</th>
+<th>Observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">32</td>
+<td align="right">0.0437</td>
+<td align="right">2.6492</td>
+<td>Short prompt, low prefill cost</td>
+</tr>
+<tr>
+<td align="right">128</td>
+<td align="right">0.0450</td>
+<td align="right">2.3884</td>
+<td>Similar TTFT to 32 tokens</td>
+</tr>
+<tr>
+<td align="right">512</td>
+<td align="right">0.0674</td>
+<td align="right">2.6174</td>
+<td>Clear prefill-cost growth</td>
+</tr>
+<tr>
+<td align="right">1024</td>
+<td align="right">0.1561</td>
+<td align="right">2.6707</td>
+<td>Largest TTFT due to full-prompt attention/KV-cache construction</td>
+</tr>
+</tbody></table>
+<h3>TPOT vs. Output Length</h3>
+<p><img src="../assets/projects/llm-serving/repo-tpot-vs-output-length.png" alt="TPOT vs output length"></p>
+<p>Output sweep setting: fixed prompt length of 128 input tokens.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Output length (tokens)</th>
+<th align="right">Average TPOT (sec/token)</th>
+<th align="right">Average total latency (sec)</th>
+<th>Observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">32</td>
+<td align="right">0.0361</td>
+<td align="right">1.1586</td>
+<td>Short decode, lowest total latency</td>
+</tr>
+<tr>
+<td align="right">64</td>
+<td align="right">0.0352</td>
+<td align="right">2.2537</td>
+<td>TPOT remains stable</td>
+</tr>
+<tr>
+<td align="right">128</td>
+<td align="right">0.0366</td>
+<td align="right">4.6908</td>
+<td>Total latency grows with generated tokens</td>
+</tr>
+<tr>
+<td align="right">256</td>
+<td align="right">0.0359</td>
+<td align="right">9.1844</td>
+<td>Longest decode, total latency scales nearly linearly</td>
+</tr>
+</tbody></table>
+<p>The TPOT curve is much flatter than TTFT. This supports the expected separation between prefill and decode: prompt length strongly affects prefill/TTFT, while output length mostly extends total latency by repeating decode steps.</p>
+<h3>Throughput vs. Concurrency</h3>
+<p><img src="../assets/projects/llm-serving/repo-throughput-vs-concurrency.png" alt="Throughput vs concurrency"></p>
+<p>Concurrency sweep setting: 20 total requests, 128 input tokens per request, 64 generated tokens per request.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Concurrency</th>
+<th align="right">Requests/sec</th>
+<th align="right">Tokens/sec</th>
+<th align="right">Wall time (sec)</th>
+<th>Observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1</td>
+<td align="right">0.4000</td>
+<td align="right">25.60</td>
+<td align="right">49.999</td>
+<td>Best throughput in this run</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">0.3674</td>
+<td align="right">23.51</td>
+<td align="right">54.436</td>
+<td>Throughput begins to drop</td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td align="right">0.3289</td>
+<td align="right">21.05</td>
+<td align="right">60.803</td>
+<td>More contention, lower token throughput</td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td align="right">0.2882</td>
+<td align="right">18.44</td>
+<td align="right">69.400</td>
+<td>Higher concurrency reduces completed requests/sec</td>
+</tr>
+<tr>
+<td align="right">16</td>
+<td align="right">0.2522</td>
+<td align="right">16.14</td>
+<td align="right">79.316</td>
+<td>Worst throughput and longest wall time</td>
+</tr>
+</tbody></table>
+<h3>Latency vs. Concurrency</h3>
+<p><img src="../assets/projects/llm-serving/repo-avg-latency-vs-concurrency.png" alt="Average latency vs concurrency"></p>
+<table>
+<thead>
+<tr>
+<th align="right">Concurrency</th>
+<th align="right">Average latency (sec)</th>
+<th align="right">P95 latency (sec)</th>
+<th>Observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1</td>
+<td align="right">2.499</td>
+<td align="right">2.920</td>
+<td>Low queueing/contention baseline</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">5.437</td>
+<td align="right">6.794</td>
+<td>Latency roughly doubles</td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td align="right">12.140</td>
+<td align="right">14.708</td>
+<td>Tail latency grows sharply</td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td align="right">25.457</td>
+<td align="right">29.433</td>
+<td>Requests spend much longer under contention</td>
+</tr>
+<tr>
+<td align="right">16</td>
+<td align="right">56.324</td>
+<td align="right">67.718</td>
+<td>Severe latency degradation</td>
+</tr>
+</tbody></table>
+<p>The concurrency sweep is the most important result from the repo. In this benchmark, increasing concurrency did not improve throughput; it reduced requests/sec and tokens/sec while sharply increasing average and P95 latency. This indicates that the tested serving setup was already resource-constrained, so more simultaneous requests mainly added contention and queueing rather than useful parallelism.</p>
+<h2>Benchmark Limitations and Scope</h2>
+<p>This benchmark should be described precisely as a Hugging Face FP16 baseline, not as a production serving engine.</p>
+<table>
+<thead>
+<tr>
+<th>Limitation</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Not a continuous-batching engine</td>
+<td>The code uses <code>transformers.model.generate()</code> rather than vLLM, TensorRT-LLM, TGI, or SGLang.</td>
+</tr>
+<tr>
+<td>No PagedAttention or paged KV cache</td>
+<td>KV cache is enabled, but the benchmark does not implement production-style KV block management.</td>
+</tr>
+<tr>
+<td>No request preemption or iteration-level scheduler</td>
+<td>Independent requests are not dynamically merged into an optimized decode batch.</td>
+</tr>
+<tr>
+<td>Approximate model-side TTFT</td>
+<td>The code measures a first-token timing path, but not full client-observed streaming TTFT with network, serialization, and serving scheduler delay.</td>
+</tr>
+<tr>
+<td>FP16 baseline only</td>
+<td>The current repo does not contain completed AWQ, GPTQ, INT8, or FP8 comparison results.</td>
+</tr>
+<tr>
+<td>Small model</td>
+<td>Qwen2.5-0.5B fits easily on T4, so Python overhead and scheduling overhead may be more visible than they would be for larger 7B/13B models.</td>
+</tr>
+</tbody></table>
+<p>The most important interpretation is that concurrency is not the same as batching.</p>
+<pre><code class="language-text">batch size:
+    multiple inputs explicitly combined in one model forward
+
+concurrency:
+    multiple independent requests exist at the same time
+</code></pre>
+<p>Concurrency becomes useful for throughput only when a serving engine converts independent requests into efficient GPU batches through scheduling. In this benchmark, multiple concurrent requests mostly compete for the same Hugging Face <code>generate()</code> path and single T4 GPU. That can introduce Python thread contention, CUDA work serialization, independent KV caches, extra kernel launches, stream/context contention, and small unbatched GEMMs.</p>
+<p>This is why the concurrency results show:</p>
+<pre><code class="language-text">concurrency increases
+        ↓
+average latency and P95 latency increase sharply
+        ↓
+requests/sec and tokens/sec decrease
+</code></pre>
+<p>That result is still valuable: it demonstrates why production LLM serving needs explicit batching, admission control, and scheduler design instead of simply allowing more simultaneous requests.</p>
+<h2>Main Takeaways</h2>
+<ul>
+<li>TTFT is the best metric for first-response responsiveness.</li>
+<li>TPOT is the best metric for sustained token streaming speed.</li>
+<li>End-to-end latency combines prefill and decode costs.</li>
+<li>P95 latency is necessary for understanding tail behavior under contention.</li>
+<li>Prefill is usually compute-heavy because it processes the full prompt.</li>
+<li>Decode is often memory-bound because each step repeatedly reads and updates the KV cache.</li>
+<li>Concurrency can improve throughput through batching, but it can also increase queueing delay and tail latency.</li>
+<li>In this repo&#39;s concurrency experiment, higher concurrency reduced throughput and sharply increased both average latency and P95 latency.</li>
+<li>The current implementation is an FP16 Hugging Face baseline, not a full continuous-batching serving engine.</li>
+<li>Concurrency and batch size are different; concurrency only becomes efficient batching when a scheduler explicitly combines requests.</li>
+</ul>
+<h2>Skills Demonstrated</h2>
+<ul>
+<li>LLM serving metric design.</li>
+<li>Latency and throughput benchmarking.</li>
+<li>Prefill/decode bottleneck analysis.</li>
+<li>Queueing and concurrency reasoning.</li>
+<li>GPU inference performance analysis.</li>
+<li>Clear visualization of serving-system behavior.</li>
+</ul>
+<h2>Experiment Result Analysis</h2>
+<p>The benchmark results match the expected behavior of autoregressive LLM serving. TTFT grows strongly with prompt length because prefill must process the entire prompt and construct the initial KV cache before the first token can be produced. The 1024-token prompt shows the largest TTFT, which reflects the cost of full-sequence attention and initial cache construction.</p>
+<p>TPOT is comparatively stable across output lengths because each decode step performs a similar unit of work: read the current KV cache, process the latest generated token, sample the next token, and append new cache entries. Output length still increases total latency, but it does so by repeating decode steps rather than by making each individual step dramatically more expensive.</p>
+<p>Concurrency adds another layer. In theory, more concurrent requests can create batching opportunities and improve GPU utilization, especially during decode. In this benchmark, however, higher concurrency reduced throughput from 0.4000 requests/sec at concurrency 1 to 0.2522 requests/sec at concurrency 16, while P95 latency increased from 2.92 sec to 67.72 sec. That pattern suggests the serving setup was dominated by contention, queueing, and resource saturation rather than by beneficial batching.</p>
+<p>This concurrency result is useful because it shows why serving systems need explicit admission control and concurrency limits. More in-flight requests are not automatically better. Once the GPU or scheduler is saturated, additional concurrency can lower throughput and dramatically worsen tail latency.</p>
+<p>The result also highlights the gap between independent concurrent <code>generate()</code> calls and production serving engines. A production engine with continuous batching may trade higher per-request latency for higher aggregate throughput. This baseline did not show that trade-off; it showed contention without batching benefit. That makes the result useful as a baseline and as motivation for future comparisons against vLLM, TensorRT-LLM, TGI, or SGLang.</p>
+<p>Overall, the benchmark separates three different questions that are often mixed together: how fast the first token appears, how fast later tokens stream, and how much work the system can sustain under concurrent load. That separation makes it easier to diagnose whether an inference bottleneck is dominated by prefill compute, decode memory bandwidth, queueing, batching policy, or tail-latency behavior.</p>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>

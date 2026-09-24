@@ -1,0 +1,1146 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>IO-Aware Attention System with Triton and FlashAttention-style Optimization</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>IO-Aware Attention System with Triton and FlashAttention-style Optimization</h1>
+<p>This project implements and analyzes Triton kernels for vector operations, row-wise ML kernels, naive attention, paged KV-cache attention, and a mini FlashAttention-style kernel. The main goal is to understand why naive attention is memory-heavy and how online softmax plus tiled Q/K/V loading reduces DRAM traffic.</p>
+<p>Source repo: <a href="https://github.com/licheng2018/triton">github</a></p>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Jump to sections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Overview</td>
+<td><a href="#project-goal">Project Goal</a> · <a href="#visual-interview-map">Visual Interview Map</a> · <a href="#repository-structure">Repository Structure</a> · <a href="#project-component-map">Project Component Map</a> · <a href="#chapter-1-integration-scope">Chapter 1 Integration Scope</a></td>
+</tr>
+<tr>
+<td>Attention Theory</td>
+<td><a href="#naive-attention-and-io-cost">Naive Attention and IO Cost</a> · <a href="#arithmetic-intensity-and-t4-roofline-example">Arithmetic Intensity and T4 Roofline Example</a> · <a href="#diagnosing-memory-bound-behavior">Diagnosing Memory-Bound Behavior</a></td>
+</tr>
+<tr>
+<td>FlashAttention</td>
+<td><a href="#flashattention-io-aware-design">FlashAttention IO-Aware Design</a> · <a href="#triton-program-ownership-and-tile-loop">Triton Program Ownership and Tile Loop</a> · <a href="#online-softmax">Online Softmax</a> · <a href="#why-backward-recomputation-is-necessary">Why Backward Recomputation Is Necessary</a> · <a href="#flashattention-2-design-ideas">FlashAttention-2 Design Ideas</a> · <a href="#visual-explanations">Visual Explanations</a></td>
+</tr>
+<tr>
+<td>Implementation Results</td>
+<td><a href="#triton-warm-up-vector-add">Triton Warm-Up: Vector Add</a> · <a href="#triton-row-wise-kernel-tuning">Triton Row-Wise Kernel Tuning</a> · <a href="#naive-triton-attention-baseline">Naive Triton Attention Baseline</a> · <a href="#naive-attention-profiling-sweep">Naive Attention Profiling Sweep</a> · <a href="#paged-kv-cache-toy-attention">Paged KV-Cache Toy Attention</a> · <a href="#mini-flashattention-style-kernel">Mini FlashAttention-style Kernel</a> · <a href="#flashattention-v2-split-k-experiment">FlashAttention v2 / Split-K Experiment</a></td>
+</tr>
+<tr>
+<td>Review</td>
+<td><a href="#benchmark-methodology-and-caveats">Benchmark Methodology and Caveats</a> · <a href="#main-takeaways">Main Takeaways</a> · <a href="#experiment-result-analysis">Experiment Result Analysis</a></td>
+</tr>
+</tbody></table>
+<h2>Project Goal</h2>
+<p>The project studies attention optimization as an IO-aware GPU programming problem. It starts from simple Triton kernels, builds a correctness-first naive attention baseline, then implements a mini FlashAttention-style forward kernel that fuses score computation, scaling, masking, online softmax, and multiplication by <code>V</code> without materializing the full attention score or probability matrices.</p>
+<p>The main lesson from the PDF review is:</p>
+<pre><code class="language-text">FlashAttention does not change the leading O(N^2 D) attention arithmetic.
+It changes where data lives and how often it crosses the global-memory boundary.
+</code></pre>
+<p>The work therefore focuses on:</p>
+<ul>
+<li>Understanding why naive attention is IO-heavy.</li>
+<li>Building a controlled Triton baseline.</li>
+<li>Reducing global-memory traffic through tiling and fusion.</li>
+<li>Maintaining exact numerically stable attention through online softmax.</li>
+<li>Auditing benchmark methodology, correctness parity, and profiler interpretation.</li>
+</ul>
+<h3>Visual Interview Map</h3>
+<p>These diagrams summarize the attention optimization story in one place: naive attention materializes large <code>N x N</code> intermediates, while FlashAttention-style kernels tile Q/K/V, keep online-softmax state on chip, and reduce global-memory traffic.</p>
+<p><strong>Naive attention dataflow</strong></p>
+<p><img src="../assets/projects/triton-flashattention/naive-attention-dataflow.png" alt="Naive attention dataflow"></p>
+<p><strong>FlashAttention IO-aware tiled execution</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flashattention-io-aware-overview.png" alt="FlashAttention IO-aware tiled execution overview"></p>
+<p><img src="../assets/projects/triton-flashattention/flash-attention-performance-comparison.png" alt="FlashAttention performance comparison"></p>
+<p><img src="../assets/projects/triton-flashattention/online-softmax-across-tiles-exactness.png" alt="Online softmax across tiles exactness"></p>
+<p><strong>GPU memory hierarchy</strong></p>
+<p><img src="../assets/projects/triton-flashattention/memory-hierarchy.png" alt="Memory hierarchy"></p>
+<p><strong>Standard attention vs FlashAttention</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flash-vs-standard.png" alt="Standard attention vs FlashAttention"></p>
+<p><strong>FlashAttention key takeaway</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flash-key-takeaway.png" alt="FlashAttention key takeaway"></p>
+<p><strong>FlashAttention tiling</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flash-tiling.png" alt="FlashAttention tiling"></p>
+<p><strong>Fused FlashAttention flow</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flash-fused-flow.png" alt="FlashAttention fused flow"></p>
+<p><strong>Online softmax</strong></p>
+<p><img src="../assets/projects/triton-flashattention/online-softmax.png" alt="Online softmax"></p>
+<p><strong>Online softmax update timeline</strong></p>
+<p><img src="../assets/projects/triton-flashattention/online-softmax-timeline.png" alt="Online softmax update timeline"></p>
+<p><strong>FlashAttention-2 parallelization</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flash-v2-parallelization.png" alt="FlashAttention v2 parallelization"></p>
+<p><strong>FlashAttention-2 worker assignment</strong></p>
+<p><img src="../assets/projects/triton-flashattention/flash-v2-forward-workers.png" alt="FlashAttention v2 worker assignment"></p>
+<p><strong>Softmax and warp-level reduction</strong></p>
+<p><img src="../assets/projects/triton-flashattention/softmax-warp-shuffle.png" alt="Warp shuffle reduction"></p>
+<p><img src="../assets/projects/triton-flashattention/softmax-definition.png" alt="Softmax definition"></p>
+<h2>Repository Structure</h2>
+<table>
+<thead>
+<tr>
+<th>Notebook</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>1. triton_vector_add.ipynb</code></td>
+<td>Triton vector add baseline and bandwidth benchmark.</td>
+</tr>
+<tr>
+<td><code>2. triton_matmul_softmax_layernorm.ipynb</code></td>
+<td>Triton matmul, softmax, LayerNorm, tuning of <code>num_warps</code> and <code>num_stages</code>.</td>
+</tr>
+<tr>
+<td><code>3. attention.ipynb</code></td>
+<td>Naive Triton attention, paged KV-cache toy example, mini FlashAttention kernel, v1 vs. v2/split-k experiment.</td>
+</tr>
+</tbody></table>
+<h2>Project Component Map</h2>
+<pre><code class="language-text">IO-Aware Attention System with Triton and FlashAttention-style Optimization
+│
+├── 1. Triton Kernel Warm-Up
+│   ├── Vector Add
+│   ├── Row-wise Kernel Tuning
+│   └── Basic Triton launch / program-id / block-size experiments
+│
+├── 2. Naive Attention Baseline
+│   ├── QK^T score computation
+│   ├── Row-wise softmax
+│   ├── P @ V output computation
+│   └── PyTorch correctness comparison
+│
+├── 3. Attention Profiling and Benchmarking
+│   ├── Prompt / sequence-length sweep
+│   ├── Latency and throughput measurement
+│   ├── Memory traffic analysis
+│   └── Naive attention bottleneck diagnosis
+│
+├── 4. FlashAttention-Style Forward Kernel
+│   ├── Q-block program ownership
+│   ├── K/V tile streaming
+│   ├── Online softmax state update
+│   ├── Fused score / softmax / value accumulation
+│   └── Avoidance of full S and P materialization
+│
+├── 5. Paged KV-Cache Toy Attention
+│   ├── Block-based KV layout
+│   ├── Request-to-block mapping
+│   ├── Decode-style attention over cached K/V
+│   └── Serving-oriented memory layout exploration
+│
+├── 6. FlashAttention v2 / Split-K Experiment
+│   ├── Sequence-dimension parallelism
+│   ├── Partial output accumulation
+│   ├── Cross-program reduction idea
+│   └── Parallelism vs synchronization trade-off
+│
+└── 7. Analysis and Interview Review
+    ├── Naive attention IO cost
+    ├── Arithmetic intensity and Roofline reasoning
+    ├── Memory-bound vs compute-bound diagnosis
+    ├── FlashAttention-1 vs FlashAttention-2 design ideas
+    └── Benchmark caveats and future optimization directions
+</code></pre>
+<h2>Chapter 1 Integration Scope</h2>
+<p>The first chapter of the interview review PDF covers the full FlashAttention story:</p>
+<table>
+<thead>
+<tr>
+<th>PDF section</th>
+<th>What is integrated here</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>1.1 Naive Attention</code></td>
+<td>Standard attention pipeline, compute/memory complexity, arithmetic intensity, and T4 roofline example.</td>
+</tr>
+<tr>
+<td><code>1.2 Flash Attention Improvements</code></td>
+<td>Memory hierarchy, tiling, program ownership, online softmax, and backward recomputation.</td>
+</tr>
+<tr>
+<td><code>1.3 FlashAttention-2</code></td>
+<td>Scheduling improvements, fewer non-matmul FLOPs, sequence parallelism, and better warp partitioning.</td>
+</tr>
+<tr>
+<td><code>1.4 My Implementation</code></td>
+<td>Naive Triton baseline, KPI definitions, Day 3 results, mini FlashAttention correctness and speedup.</td>
+</tr>
+<tr>
+<td><code>1.5 Common Interview Questions</code></td>
+<td>Benchmark caveats, memory-bound diagnosis, tuning trade-offs, and communication-ready project summaries.</td>
+</tr>
+<tr>
+<td><code>1.6 Visual Explanations</code></td>
+<td>Naive attention dataflow, Flash fused flow, and online softmax update timeline.</td>
+</tr>
+</tbody></table>
+<h2>Naive Attention and IO Cost</h2>
+<p>Naive scaled dot-product attention is computed in three stages:</p>
+<pre><code class="language-text">S = Q K^T
+P = softmax(S)
+O = P V
+</code></pre>
+<p>For one head:</p>
+<pre><code class="language-text">Q, K, V, O in R^{N x D}
+S, P in R^{N x N}
+</code></pre>
+<p>The main arithmetic work is the two GEMM-like stages:</p>
+<pre><code class="language-text">QK^T: about 2 N^2 D FLOPs
+PV:   about 2 N^2 D FLOPs
+Total leading work: about 4 N^2 D FLOPs
+</code></pre>
+<p>This FLOP count excludes softmax comparisons, subtraction, exponentials, reductions, divisions, masking, dtype conversions, and indexing. Those non-GEMM operations matter for runtime, especially because softmax does not map to Tensor Cores like GEMM.</p>
+<p>The IO problem is that naive attention materializes the quadratic intermediates <code>S</code> and <code>P</code> in off-chip global memory. A typical unfused pipeline performs these global-memory round trips:</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Global-memory behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Score GEMM</td>
+<td>Reads <code>Q</code>, <code>K</code>; writes <code>S</code>.</td>
+</tr>
+<tr>
+<td>Row-wise softmax</td>
+<td>Reads <code>S</code>; writes <code>P</code>.</td>
+</tr>
+<tr>
+<td>Output GEMM</td>
+<td>Reads <code>P</code>, <code>V</code>; writes <code>O</code>.</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/triton-flashattention/naive-attention-dataflow.png" alt="Naive attention dataflow"></p>
+<p>This is why the baseline is slow: the matrix multiplications do useful arithmetic, but the pipeline also writes and rereads two <code>N x N</code> intermediates and pays multiple kernel-launch boundaries.</p>
+<p>A minimal logical byte model for the quadratic intermediates includes at least:</p>
+<pre><code class="language-text">write S + read S + write P + read P = O(N^2) global-memory traffic
+</code></pre>
+<p>Real traffic can be higher because of cache behavior, dtype choices, repeated reads, transaction granularity, and local-memory spills.</p>
+<h2>Arithmetic Intensity and T4 Roofline Example</h2>
+<p>Arithmetic intensity answers a simple question:</p>
+<pre><code class="language-text">AI = FLOPs / global-memory bytes
+</code></pre>
+<p>It measures how much useful arithmetic is extracted from every byte that crosses the off-chip global-memory boundary. A higher value means the kernel can potentially keep the compute units busier; a lower value means the kernel spends more of its time waiting for data movement.</p>
+<p>A kernel is memory-bound in the Roofline model when:</p>
+<pre><code class="language-text">AI &lt; AI_ridge = peak_compute / peak_memory_bandwidth
+</code></pre>
+<p>For naive attention, we can estimate the arithmetic intensity from the forward-pass work and the minimum logical global-memory traffic.</p>
+<p>For one head:</p>
+<pre><code class="language-text">Q, K in R^{N x d}
+V, O in R^{N x d_v}
+S, P in R^{N x N}
+</code></pre>
+<p>The leading FLOP count is:</p>
+<pre><code class="language-text">QK^T: about 2 N^2 d FLOPs
+PV:   about 2 N^2 d_v FLOPs
+
+Total leading compute: 2 N^2 d + 2 N^2 d_v
+</code></pre>
+<p>The minimal logical global-memory traffic of the unfused pipeline includes:</p>
+<table>
+<thead>
+<tr>
+<th>Tensor traffic</th>
+<th align="right">Elements moved</th>
+<th>Why it appears</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Read <code>Q</code>, <code>K</code></td>
+<td align="right"><code>2Nd</code></td>
+<td>Score GEMM input.</td>
+</tr>
+<tr>
+<td>Write <code>S</code></td>
+<td align="right"><code>N^2</code></td>
+<td>Materialized attention scores.</td>
+</tr>
+<tr>
+<td>Read <code>S</code></td>
+<td align="right"><code>N^2</code></td>
+<td>Softmax input.</td>
+</tr>
+<tr>
+<td>Write <code>P</code></td>
+<td align="right"><code>N^2</code></td>
+<td>Materialized attention probabilities.</td>
+</tr>
+<tr>
+<td>Read <code>P</code></td>
+<td align="right"><code>N^2</code></td>
+<td>Output GEMM input.</td>
+</tr>
+<tr>
+<td>Read <code>V</code></td>
+<td align="right"><code>Nd_v</code></td>
+<td>Value matrix input.</td>
+</tr>
+<tr>
+<td>Write <code>O</code></td>
+<td align="right"><code>Nd_v</code></td>
+<td>Final output.</td>
+</tr>
+</tbody></table>
+<p>So the idealized traffic is:</p>
+<pre><code class="language-text">4 N^2 + 2 N d + 2 N d_v elements
+</code></pre>
+<p>If each element uses <code>b</code> bytes, the byte traffic is:</p>
+<pre><code class="language-text">b * (4 N^2 + 2 N d + 2 N d_v)
+</code></pre>
+<p>Therefore the modeled arithmetic intensity of the complete naive forward pipeline is:</p>
+<pre><code class="language-text">AI_naive ~= (2 N^2 d + 2 N^2 d_v)
+            / [b * (4 N^2 + 2 N d + 2 N d_v)]
+</code></pre>
+<p>In the common self-attention case where <code>d_v = d</code>, this simplifies to:</p>
+<pre><code class="language-text">AI_naive ~= 4 N^2 d / [b * (4 N^2 + 4 N d)]
+         ~= N d / [b * (N + d)]
+</code></pre>
+<p>For long sequences where <code>N &gt;&gt; d</code>:</p>
+<pre><code class="language-text">AI_naive ~= d / b
+</code></pre>
+<p>This is the key intuition from the PDF: increasing sequence length does not make naive attention arbitrarily compute-dense. Its dominant compute grows as <code>N^2</code>, but its dominant global-memory traffic also grows as <code>N^2</code> because the full score matrix <code>S</code> and probability matrix <code>P</code> are written to and reread from global memory.</p>
+<p>The PDF then uses this concrete example:</p>
+<pre><code class="language-text">N = 1024
+d = d_v = 64
+b = 2 bytes per element, FP16/BF16 model
+</code></pre>
+<p>The leading attention work is:</p>
+<pre><code class="language-text">4 * N^2 * d
+= 4 * 1024^2 * 64
+= 268,435,456 FLOPs
+~= 0.268 GFLOPs
+</code></pre>
+<p>The idealized off-chip global-memory traffic is:</p>
+<pre><code class="language-text">Bytes ~= b * (4 N^2 + 4 N d)
+      = 2 * (4 * 1024^2 + 4 * 1024 * 64)
+      = 8,912,896 bytes
+      ~= 8.91 MB
+</code></pre>
+<p>So the modeled arithmetic intensity is:</p>
+<pre><code class="language-text">AI_naive ~= 268,435,456 / 8,912,896
+         ~= 30.1 FLOP/byte
+</code></pre>
+<p>For an NVIDIA T4, using the PDF&#39;s idealized reference numbers:</p>
+<pre><code class="language-text">mixed-precision Tensor Core peak ~= 65 TFLOP/s
+memory bandwidth ~= 320 GB/s
+AI_ridge ~= 65,000 / 320 ~= 203 FLOP/byte
+</code></pre>
+<p>Since:</p>
+<pre><code class="language-text">AI_naive ~= 30.1 FLOP/byte &lt; AI_ridge,T4 ~= 203 FLOP/byte
+</code></pre>
+<p>the modeled end-to-end naive attention pipeline falls on the memory-bound side of the idealized T4 Roofline.</p>
+<p>Another way to read the same result is to compare two ideal lower bounds:</p>
+<pre><code class="language-text">t_compute = FLOPs / peak_compute
+t_memory  = bytes / peak_memory_bandwidth
+</code></pre>
+<p>For the T4 example:</p>
+<pre><code class="language-text">t_compute ~= 0.268 GFLOPs / 65 TFLOP/s
+          ~= 4.13 us
+
+t_memory  ~= 8.91 MB / 320 GB/s
+          ~= 27.9 us
+</code></pre>
+<p>Even on an idealized machine, moving the data takes about:</p>
+<pre><code class="language-text">27.9 / 4.13 ~= 6.8x
+</code></pre>
+<p>longer than the leading arithmetic. The bandwidth-limited throughput ceiling is also much lower than the nominal compute peak:</p>
+<pre><code class="language-text">30.1 FLOP/byte * 320 GB/s ~= 9.63 TFLOP/s
+</code></pre>
+<p>This is far below the T4&#39;s idealized <code>65 TFLOP/s</code> mixed-precision peak. That gap explains why FlashAttention can speed up attention without changing the leading <code>O(N^2 d)</code> math: it mainly removes the global-memory round trips for the quadratic intermediates <code>S</code> and <code>P</code>.</p>
+<p>This estimate should be interpreted carefully. It is a Roofline model, not an exact latency prediction. Real performance is lower because kernels do not sustain peak bandwidth or peak Tensor Core throughput, and because scaling, masking, softmax exponentials, launch overhead, tiling overhead, and non-ideal cache reuse add extra work and traffic. Also, the two GEMMs inside naive attention may individually be compute-efficient; the full pipeline can still be memory-bound once materialization of <code>S</code> and <code>P</code> plus softmax traffic are included.</p>
+<h2>Diagnosing Memory-Bound Behavior</h2>
+<p>The PDF emphasizes that memory-bound diagnosis should combine evidence rather than rely on one number.</p>
+<table>
+<thead>
+<tr>
+<th>Evidence type</th>
+<th>What to check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Model evidence</td>
+<td>Arithmetic intensity below the machine ridge point.</td>
+</tr>
+<tr>
+<td>Counter evidence</td>
+<td>Roofline point near a memory ceiling, high DRAM/L2/L1 traffic, low compute utilization, relevant warp stalls.</td>
+</tr>
+<tr>
+<td>Experimental evidence</td>
+<td>Reducing transferred bytes reduces runtime by a meaningful amount.</td>
+</tr>
+</tbody></table>
+<p>Useful checks include:</p>
+<ul>
+<li>Profile the complete attention pipeline and each stage separately.</li>
+<li>Inspect achieved DRAM/L2/L1 throughput and SM/Tensor Core throughput.</li>
+<li>Look at warp-stall reasons such as long scoreboard, memory dependency, barrier, and math-pipe throttle.</li>
+<li>Compare against a controlled optimization that reduces bytes without substantially changing FLOPs.</li>
+<li>Sweep sequence length <code>N</code> while keeping <code>D</code> fixed.</li>
+</ul>
+<p>Important caveat:</p>
+<pre><code class="language-text">Low achieved bandwidth does not prove memory is irrelevant.
+</code></pre>
+<p>A kernel can be memory-latency-bound, under-occupied, uncoalesced, dependent on cache misses, or limited by too few active programs without saturating DRAM bandwidth.</p>
+<h2>FlashAttention IO-Aware Design</h2>
+<p>FlashAttention computes exact scaled dot-product attention, but reorganizes execution to reduce data movement. Its key idea is to keep small tiles and row-wise running state on chip instead of materializing full <code>S</code> and <code>P</code> matrices in global memory.</p>
+<p><img src="../assets/projects/triton-flashattention/flashattention-io-aware-overview.png" alt="FlashAttention IO-aware tiled execution overview"></p>
+<p><em>End-to-end view of the forward pass: Q/K/V tiles move from HBM into on-chip SRAM, each query tile streams over K/V tiles while online softmax keeps only row-wise state <code>(m, l, O)</code>, and the completed output tile is written back once.</em></p>
+<p><img src="../assets/projects/triton-flashattention/flash-attention-performance-comparison.png" alt="FlashAttention performance comparison"></p>
+<p><img src="../assets/projects/triton-flashattention/online-softmax-across-tiles-exactness.png" alt="Online softmax across tiles exactness"></p>
+<p>GPU memory is hierarchical: on-chip SRAM/shared-memory/cache capacity is small, but bandwidth is much higher and access is closer to compute. Off-chip GPU memory has much larger capacity but is expensive to move through repeatedly.</p>
+<p><img src="../assets/projects/triton-flashattention/memory-hierarchy.png" alt="Memory hierarchy"></p>
+<p>The central engineering trade-off is capacity. On-chip state cannot hold the full <code>N x N</code> attention matrix for realistic sequence lengths, so FlashAttention tiles the computation and reuses local storage block by block.</p>
+<p>The IO-aware design does four things:</p>
+<ul>
+<li><strong>Avoid quadratic intermediates in global memory:</strong> local score/probability tiles are produced and consumed on chip.</li>
+<li><strong>Increase data reuse:</strong> loaded <code>Q</code>, <code>K</code>, and <code>V</code> tiles participate in many multiply-accumulate operations before local state is recycled.</li>
+<li><strong>Fuse operations:</strong> score computation, scaling, masking, softmax, and multiplication by <code>V</code> happen inside one tiled kernel.</li>
+<li><strong>Keep attention exact:</strong> online softmax combines independently processed tiles using running maxima and normalization sums.</li>
+</ul>
+<p><img src="../assets/projects/triton-flashattention/flash-vs-standard.png" alt="Standard attention vs FlashAttention"></p>
+<p><img src="../assets/projects/triton-flashattention/flash-key-takeaway.png" alt="FlashAttention key takeaway"></p>
+<h2>Triton Program Ownership and Tile Loop</h2>
+<p>The matrices are partitioned along the sequence dimension:</p>
+<pre><code class="language-text">Q = [Q1, Q2, ..., Q_Tr]
+K = [K1, K2, ..., K_Tc]
+V = [V1, V2, ..., V_Tc]
+</code></pre>
+<p>with tile shapes:</p>
+<pre><code class="language-text">Qi in R^{Br x D}
+Kj in R^{Bc x D}
+Vj in R^{Bc x Dv}
+</code></pre>
+<p>where <code>Br</code> and <code>Bc</code> are chosen so the active tiles and temporary state fit within program-local/on-chip resource budgets.</p>
+<p>The PDF notes an important distinction:</p>
+<pre><code class="language-text">Some paper diagrams use a column-major schedule: load one K/V tile and visit
+multiple Q tiles. The Triton implementation here instead launches over query
+blocks: each program owns one Qi tile and streams over K/V tiles.
+</code></pre>
+<p>In this implementation, each Triton program:</p>
+<ol>
+<li>Owns a query block <code>Qi</code>.</li>
+<li>Keeps <code>Qi</code> and row-wise state <code>(m_i, l_i, A_i)</code> program-local.</li>
+<li>Loops over <code>Kj, Vj</code> tiles.</li>
+<li>Computes a local score tile:</li>
+</ol>
+<pre><code class="language-text">S_ij = Qi Kj^T / sqrt(D)
+</code></pre>
+<ol start="5">
+<li>Applies boundary, additive, and causal masks.</li>
+<li>Updates online softmax state.</li>
+<li>Accumulates the partial output.</li>
+<li>Writes only the final output tile.</li>
+</ol>
+<p><img src="../assets/projects/triton-flashattention/flash-tiling.png" alt="FlashAttention tiling"></p>
+<p><img src="../assets/projects/triton-flashattention/flash-fused-flow.png" alt="FlashAttention fused flow"></p>
+<p>Only required input blocks and the final output cross the global-memory boundary; temporary score and probability tiles are consumed on chip.</p>
+<h2>Online Softmax</h2>
+<p>A normal stable softmax needs the row maximum and row sum:</p>
+<pre><code class="language-text">softmax(x_j) = exp(x_j - m) / sum_k exp(x_k - m)
+</code></pre>
+<p>FlashAttention cannot materialize the full score row before softmax. It therefore keeps online state for each query row:</p>
+<pre><code class="language-text">m_i: running maximum
+l_i: running denominator / normalization factor
+A_i: running unnormalized weighted output accumulator
+</code></pre>
+<p>For a new score block with block maximum <code>m_tilde</code> and block denominator <code>l_tilde</code>, the state is updated by moving old and new terms to a shared numerical reference:</p>
+<pre><code class="language-text">m_new = max(m_old, m_tilde)
+alpha = exp(m_old - m_new)
+beta  = exp(m_tilde - m_new)
+l_new = alpha * l_old + beta * l_tilde
+A_new = alpha * A_old + beta * A_tilde
+</code></pre>
+<p>The final output is:</p>
+<pre><code class="language-text">O_i = A_i / l_i
+</code></pre>
+<p><img src="../assets/projects/triton-flashattention/online-softmax.png" alt="Online softmax"></p>
+<p><img src="../assets/projects/triton-flashattention/online-softmax-timeline.png" alt="Online softmax update timeline"></p>
+<p>The rescaling is necessary because exponentials accumulated from earlier blocks were normalized relative to the old maximum. If a later tile contains a larger maximum, earlier denominator and output-numerator terms must be rescaled before adding the new tile. Without this correction, different tiles would be normalized under incompatible exponential scales.</p>
+<h2>Why Backward Recomputation Is Necessary</h2>
+<p>FlashAttention deliberately avoids materializing the probability matrix <code>P</code> in HBM. Saving it for backward would reintroduce the same quadratic activation memory and IO cost that the forward pass removed.</p>
+<p>Instead, FlashAttention stores compact per-row statistics and recomputes score/probability tiles during backward.</p>
+<p>The backward idea is:</p>
+<ol>
+<li>Reload <code>Q_i</code>, <code>K_j</code>, <code>V_j</code>, and saved row statistics.</li>
+<li>Recompute the local score tile.</li>
+<li>Reconstruct local probabilities using the saved normalization state.</li>
+<li>Compute local gradient contributions.</li>
+<li>Accumulate gradients without saving full <code>P</code>.</li>
+</ol>
+<p>This is a deliberate compute-memory trade-off:</p>
+<pre><code class="language-text">Repeat some QK^T and exp work
+        vs
+avoid storing and rereading O(N^2) probability matrices
+</code></pre>
+<p>On modern GPUs, data movement is often more expensive than recomputing local arithmetic, so recomputation preserves the forward-pass IO and memory benefits.</p>
+<h2>FlashAttention-2 Design Ideas</h2>
+<p>FlashAttention-2 keeps the same exact-attention mathematics and the same IO-aware principle, but improves scheduling and GPU utilization.</p>
+<p>FlashAttention-1 already avoids materializing the full attention matrix, but it can still leave performance on the table because:</p>
+<ul>
+<li>Some work is non-matmul scalar work such as rescaling, masking, and normalization.</li>
+<li>Parallelism can be limited when a single block owns too much row work.</li>
+<li>Shared-memory communication and warp partitioning can be inefficient.</li>
+</ul>
+<p>FlashAttention-2 improves three areas:</p>
+<table>
+<thead>
+<tr>
+<th>Improvement</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fewer non-matmul FLOPs</td>
+<td>Reduces unnecessary normalization/rescaling work and restructures bounds/masking logic.</td>
+</tr>
+<tr>
+<td>More sequence-dimension parallelism</td>
+<td>Parallelizes work across sequence tiles, especially important in backward and long-sequence cases.</td>
+</tr>
+<tr>
+<td>Better warp partitioning</td>
+<td>Splits work so warps own query slices and reduce communication/synchronization overhead.</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/triton-flashattention/flash-v2-parallelization.png" alt="FlashAttention v2 parallelization"></p>
+<p><img src="../assets/projects/triton-flashattention/flash-v2-forward-workers.png" alt="FlashAttention v2 worker assignment"></p>
+<p>The interview-safe summary is:</p>
+<pre><code class="language-text">FlashAttention established IO-aware exact attention. FlashAttention-2 keeps the
+algorithmic foundation but improves GPU utilization through better scheduling,
+less non-matmul overhead, more sequence parallelism, and better warp work
+partitioning.
+</code></pre>
+<h2>Softmax and Warp-Level Background</h2>
+<p>The project also includes softmax background material. Row-wise softmax requires reductions, so warp-level primitives such as <code>__shfl_down_sync</code> and <code>__shfl_sync</code> are useful for reducing and broadcasting values inside a warp.</p>
+<p><img src="../assets/projects/triton-flashattention/softmax-warp-shuffle.png" alt="Warp shuffle reduction"></p>
+<p><img src="../assets/projects/triton-flashattention/softmax-definition.png" alt="Softmax definition"></p>
+<h2>Visual Explanations</h2>
+<p>These PDF diagrams are the most useful interview visuals:</p>
+<table>
+<thead>
+<tr>
+<th>Visual</th>
+<th>What it explains</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive attention dataflow</td>
+<td>Separate <code>QK^T</code>, softmax, and <code>PV</code> stages materialize full <code>S</code> and <code>P</code> in global memory.</td>
+</tr>
+<tr>
+<td>Flash fused flow</td>
+<td>One query tile streams over key/value tiles and consumes temporary score/probability tiles on chip.</td>
+</tr>
+<tr>
+<td>Online softmax timeline</td>
+<td>When a later block increases the running maximum, old denominator and output accumulator state are rescaled.</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/triton-flashattention/naive-attention-dataflow.png" alt="Naive attention dataflow"></p>
+<p><img src="../assets/projects/triton-flashattention/flash-fused-flow.png" alt="FlashAttention fused flow"></p>
+<p><img src="../assets/projects/triton-flashattention/online-softmax-timeline.png" alt="Online softmax update timeline"></p>
+<h2>Triton Warm-Up: Vector Add</h2>
+<p>The first notebook validates a simple Triton vector add kernel against PyTorch and measures memory bandwidth on Tesla T4.</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">PyTorch time (ms)</th>
+<th align="right">PyTorch GB/s</th>
+<th align="right">Triton block</th>
+<th align="right">Triton time (ms)</th>
+<th align="right">Triton GB/s</th>
+<th align="right">Speedup</th>
+<th align="right">Max error</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1,000,000</td>
+<td align="right">0.0526</td>
+<td align="right">228.34</td>
+<td align="right">512</td>
+<td align="right">0.0521</td>
+<td align="right">230.14</td>
+<td align="right">1.01x</td>
+<td align="right">0.00e+00</td>
+</tr>
+<tr>
+<td align="right">10,000,000</td>
+<td align="right">0.4915</td>
+<td align="right">244.15</td>
+<td align="right">256</td>
+<td align="right">0.4672</td>
+<td align="right">256.87</td>
+<td align="right">1.05x</td>
+<td align="right">0.00e+00</td>
+</tr>
+<tr>
+<td align="right">50,000,000</td>
+<td align="right">2.4857</td>
+<td align="right">241.38</td>
+<td align="right">256</td>
+<td align="right">2.3667</td>
+<td align="right">253.51</td>
+<td align="right">1.05x</td>
+<td align="right">0.00e+00</td>
+</tr>
+</tbody></table>
+<p>This warm-up shows that the Triton kernel reaches similar memory bandwidth to PyTorch for a simple memory-bound operation.</p>
+<h2>Triton Row-Wise Kernel Tuning</h2>
+<p>The second notebook tests Triton row-wise kernels on Tesla T4, including the effect of <code>num_warps</code> and <code>num_stages</code>.</p>
+<p>For shape <code>B=4096, D=2048</code>, <code>float32</code>, the benchmark reported:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th>Best config</th>
+<th align="right">Time (ms)</th>
+<th align="right">Approx. GB/s</th>
+<th align="right">Max error</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Kernel A</td>
+<td><code>warps=8, stages=1</code></td>
+<td align="right">0.2825</td>
+<td align="right">237.58</td>
+<td align="right">5.588e-09</td>
+<td>1 read + 1 write per element</td>
+</tr>
+<tr>
+<td>Kernel B</td>
+<td><code>warps=8, stages=3</code></td>
+<td align="right">0.2861</td>
+<td align="right">469.17</td>
+<td align="right">4.602e-02</td>
+<td>3 reads + 1 write per element</td>
+</tr>
+</tbody></table>
+<p>The notebook also checks matmul and LayerNorm correctness:</p>
+<table>
+<thead>
+<tr>
+<th>Kernel</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Triton matmul skeleton</td>
+<td>max absolute error <code>6.250e-02</code> vs torch FP16</td>
+</tr>
+<tr>
+<td>Triton LayerNorm skeleton</td>
+<td>max absolute error <code>1.907e-06</code>, mean absolute error <code>1.651e-08</code></td>
+</tr>
+</tbody></table>
+<h2>Naive Triton Attention Baseline</h2>
+<p>The attention notebook first implements a naive attention baseline in Triton. Correctness is checked against PyTorch:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th align="right">N</th>
+<th align="right">D</th>
+<th>dtype</th>
+<th>Mask</th>
+<th align="right">Max abs error</th>
+<th align="right">Mean abs error</th>
+<th align="right">RMSE</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Naive Triton attention</td>
+<td align="right">128</td>
+<td align="right">64</td>
+<td>FP16</td>
+<td>True</td>
+<td align="right">1.192e-06</td>
+<td align="right">6.596e-08</td>
+<td align="right">1.133e-07</td>
+</tr>
+<tr>
+<td>Alternate naive version</td>
+<td align="right">128</td>
+<td align="right">64</td>
+<td>FP16</td>
+<td>True</td>
+<td align="right">7.546e-04</td>
+<td align="right">1.006e-04</td>
+<td align="right">1.451e-04</td>
+</tr>
+</tbody></table>
+<p>The quick benchmark showed that naive Triton attention was much slower than PyTorch&#39;s optimized attention path:</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">D</th>
+<th align="right">Triton naive (ms)</th>
+<th align="right">PyTorch (ms)</th>
+<th align="right">Speedup (PyTorch/Triton)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td align="right">4.712</td>
+<td align="right">0.145</td>
+<td align="right">0.03x</td>
+</tr>
+<tr>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td align="right">4.049</td>
+<td align="right">0.144</td>
+<td align="right">0.04x</td>
+</tr>
+</tbody></table>
+<p>This is expected: naive attention materializes and processes large intermediate score/probability matrices, while optimized library paths use more specialized kernels.</p>
+<h2>Naive Attention Profiling Sweep</h2>
+<p>The repo includes a Day 3 benchmark comparing PyTorch and naive Triton attention across sequence lengths and block configurations.</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th>Best naive Triton config</th>
+<th align="right">PyTorch time (ms)</th>
+<th align="right">Naive Triton time (ms)</th>
+<th align="right">Naive Triton GFLOP/s</th>
+<th align="right">Speedup vs PyTorch</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">256</td>
+<td><code>BM=64, BN=64, BK=32, SB=256, warps=4</code></td>
+<td align="right">0.0944</td>
+<td align="right">1.0278</td>
+<td align="right">16.32</td>
+<td align="right">0.09x</td>
+</tr>
+<tr>
+<td align="right">512</td>
+<td><code>BM=64, BN=128, BK=32, SB=512, warps=8</code></td>
+<td align="right">0.1036</td>
+<td align="right">1.5887</td>
+<td align="right">42.24</td>
+<td align="right">0.07x</td>
+</tr>
+<tr>
+<td align="right">1024</td>
+<td><code>BM=64, BN=128, BK=32, SB=512, warps=8</code></td>
+<td align="right">0.1335</td>
+<td align="right">3.5751</td>
+<td align="right">75.08</td>
+<td align="right">0.04x</td>
+</tr>
+</tbody></table>
+<p>The naive Triton version scales in absolute throughput as <code>N</code> grows, but it remains far behind PyTorch&#39;s optimized kernel.</p>
+<p>The detailed sweep below compares the naive attention baseline in PyTorch and Triton. This table is not the FlashAttention result; it isolates the cost of the naive Triton implementation against the optimized PyTorch attention path across sequence lengths and block configurations.</p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th align="right">N</th>
+<th align="right">D</th>
+<th>cfg</th>
+<th align="right">ms</th>
+<th align="right">GFLOP/s</th>
+<th align="right">est_GB/s</th>
+<th align="right">speedup_vs_torch</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>torch</td>
+<td align="right">256</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.0944</td>
+<td align="right">177.81</td>
+<td align="right">6.95</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">256</td>
+<td align="right">64</td>
+<td><code>BM=64,BN=64,BK=32,SB=256,w=4</code></td>
+<td align="right">1.0278</td>
+<td align="right">16.32</td>
+<td align="right">0.64</td>
+<td align="right">0.09x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">256</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.0904</td>
+<td align="right">185.62</td>
+<td align="right">7.25</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">256</td>
+<td align="right">64</td>
+<td><code>BM=128,BN=64,BK=32,SB=256,w=4</code></td>
+<td align="right">1.0256</td>
+<td align="right">16.36</td>
+<td align="right">0.64</td>
+<td align="right">0.09x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">256</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.0884</td>
+<td align="right">189.74</td>
+<td align="right">7.41</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">256</td>
+<td align="right">64</td>
+<td><code>BM=64,BN=128,BK=32,SB=512,w=8</code></td>
+<td align="right">1.0265</td>
+<td align="right">16.34</td>
+<td align="right">0.64</td>
+<td align="right">0.09x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">512</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.1027</td>
+<td align="right">653.30</td>
+<td align="right">22.97</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">512</td>
+<td align="right">64</td>
+<td><code>BM=64,BN=64,BK=32,SB=256,w=4</code></td>
+<td align="right">1.5901</td>
+<td align="right">42.20</td>
+<td align="right">1.48</td>
+<td align="right">0.07x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">512</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.1031</td>
+<td align="right">650.90</td>
+<td align="right">22.88</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">512</td>
+<td align="right">64</td>
+<td><code>BM=128,BN=64,BK=32,SB=256,w=4</code></td>
+<td align="right">1.5892</td>
+<td align="right">42.23</td>
+<td align="right">1.48</td>
+<td align="right">0.07x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">512</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.1036</td>
+<td align="right">647.97</td>
+<td align="right">22.78</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">512</td>
+<td align="right">64</td>
+<td><code>BM=64,BN=128,BK=32,SB=512,w=8</code></td>
+<td align="right">1.5887</td>
+<td align="right">42.24</td>
+<td align="right">1.49</td>
+<td align="right">0.07x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.2434</td>
+<td align="right">1102.96</td>
+<td align="right">36.62</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td><code>BM=64,BN=64,BK=32,SB=256,w=4</code></td>
+<td align="right">3.7526</td>
+<td align="right">71.53</td>
+<td align="right">2.38</td>
+<td align="right">0.04x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.1334</td>
+<td align="right">2012.36</td>
+<td align="right">66.82</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td><code>BM=128,BN=64,BK=32,SB=256,w=4</code></td>
+<td align="right">3.5791</td>
+<td align="right">75.00</td>
+<td align="right">2.49</td>
+<td align="right">0.04x</td>
+</tr>
+<tr>
+<td>torch</td>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td>-</td>
+<td align="right">0.1335</td>
+<td align="right">2010.31</td>
+<td align="right">66.75</td>
+<td align="right">1.00x</td>
+</tr>
+<tr>
+<td>naive_triton</td>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td><code>BM=64,BN=128,BK=32,SB=512,w=8</code></td>
+<td align="right">3.5751</td>
+<td align="right">75.08</td>
+<td align="right">2.49</td>
+<td align="right">0.04x</td>
+</tr>
+</tbody></table>
+<h2>Paged KV-Cache Toy Attention</h2>
+<p>The notebook also includes a toy paged-KV attention example.</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th align="right">Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Contiguous KV allocated</td>
+<td align="right">0.262 MB</td>
+</tr>
+<tr>
+<td>Contiguous KV used</td>
+<td align="right">0.262 MB</td>
+</tr>
+<tr>
+<td>Paged KV allocated</td>
+<td align="right">0.524 MB</td>
+</tr>
+<tr>
+<td>Paged KV used</td>
+<td align="right">0.262 MB</td>
+</tr>
+<tr>
+<td>Fragmentation</td>
+<td align="right">50.00%</td>
+</tr>
+</tbody></table>
+<p>Correctness check:</p>
+<table>
+<thead>
+<tr>
+<th align="right">T</th>
+<th align="right">D</th>
+<th align="right">Block T</th>
+<th align="right">Page block</th>
+<th>Mask</th>
+<th align="right">Max abs error</th>
+<th align="right">Mean abs error</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1024</td>
+<td align="right">64</td>
+<td align="right">16</td>
+<td align="right">128</td>
+<td>False</td>
+<td align="right">0.0</td>
+<td align="right">0.0</td>
+</tr>
+</tbody></table>
+<p>This experiment illustrates the memory-management side of serving attention: paged layouts can represent KV cache blocks flexibly, but they can also introduce fragmentation depending on allocation granularity.</p>
+<h2>Mini FlashAttention-style Kernel</h2>
+<p>The mini FlashAttention-style kernel uses tiled Q/K/V loading and online softmax. Correctness for the causal FP16 case:</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">D</th>
+<th>dtype</th>
+<th>causal</th>
+<th align="right">Max abs error</th>
+<th align="right">Mean abs error</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">256</td>
+<td align="right">64</td>
+<td>FP16</td>
+<td>True</td>
+<td align="right">2.441e-04</td>
+<td align="right">4.479e-08</td>
+</tr>
+</tbody></table>
+<p>Benchmark:</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">Naive Triton (ms)</th>
+<th align="right">Flash-style Triton (ms)</th>
+<th align="right">Speedup vs naive</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">256</td>
+<td align="right">1.0282</td>
+<td align="right">0.2426</td>
+<td align="right">4.24x</td>
+</tr>
+<tr>
+<td align="right">512</td>
+<td align="right">1.7125</td>
+<td align="right">0.4714</td>
+<td align="right">3.63x</td>
+</tr>
+<tr>
+<td align="right">1024</td>
+<td align="right">3.5619</td>
+<td align="right">0.4618</td>
+<td align="right">7.71x</td>
+</tr>
+</tbody></table>
+<p>The speedup comes from avoiding full materialization of the attention score/probability matrices and reusing data inside SRAM/register-level state.</p>
+<h2>FlashAttention v2 / Split-K Experiment</h2>
+<p>The PDF also discusses FlashAttention v2 ideas: better parallelization across thread blocks and more work partitioning across sequence dimensions.</p>
+<p><img src="../assets/projects/triton-flashattention/flash-v2-parallelization.png" alt="FlashAttention v2 parallelization"></p>
+<p><img src="../assets/projects/triton-flashattention/flash-v2-forward-workers.png" alt="FlashAttention v2 worker assignment"></p>
+<p>The repo includes an experimental v1 vs. v2/split-k comparison. In this implementation, v2 produced <code>nan</code> correctness values and was slower than v1:</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">v1 time (ms)</th>
+<th align="right">v2 time (ms)</th>
+<th align="right">v2/v1 speedup</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">256</td>
+<td align="right">0.2352</td>
+<td align="right">0.3407</td>
+<td align="right">0.69x</td>
+</tr>
+<tr>
+<td align="right">512</td>
+<td align="right">0.4575</td>
+<td align="right">0.9071</td>
+<td align="right">0.50x</td>
+</tr>
+<tr>
+<td align="right">1024</td>
+<td align="right">0.8932</td>
+<td align="right">3.6534</td>
+<td align="right">0.24x</td>
+</tr>
+<tr>
+<td align="right">2048</td>
+<td align="right">2.3417</td>
+<td align="right">12.0738</td>
+<td align="right">0.19x</td>
+</tr>
+</tbody></table>
+<p>This is a useful negative result: v2-style parallelization is not automatically faster. Correct split-k reduction, synchronization, and numerical handling are essential.</p>
+<h2>Benchmark Methodology and Caveats</h2>
+<p>The PDF review is careful about which claims are final and which are preliminary. The main benchmark caveats are:</p>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Why it matters</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>PyTorch baseline parity</td>
+<td>The PyTorch path may include FP16-to-FP32 conversion inside the timed function, while Triton consumes FP16 inputs and accumulates internally.</td>
+<td>Pre-convert outside timing or match dtype/accumulation semantics exactly.</td>
+</tr>
+<tr>
+<td>Flash vs naive parity</td>
+<td>The Flash path uses causal masking and scaling; the naive benchmark path must use the same semantics for a strict comparison.</td>
+<td>Validate both against the same reference immediately before benchmarking.</td>
+</tr>
+<tr>
+<td>Configuration sweep bug</td>
+<td>The top-level function accepts <code>cfg</code>, but the launchers may not forward all config fields to the Triton kernels, so displayed configs can label identical generated kernels.</td>
+<td>Forward <code>BLOCK_M</code>, <code>BLOCK_N</code>, <code>BLOCK_K</code>, <code>SOFTMAX_BLOCK</code>, and <code>num_warps</code> into the launches.</td>
+</tr>
+<tr>
+<td>Repeated Torch timing</td>
+<td>Torch may be benchmarked repeatedly for every Triton configuration and then overwritten in formatting.</td>
+<td>Benchmark Torch once per <code>(N, D)</code> shape and report it separately.</td>
+</tr>
+<tr>
+<td>Estimated GB/s</td>
+<td>The current GB/s value is an algorithmic estimate, not hardware DRAM bandwidth.</td>
+<td>Use Nsight Compute counters for DRAM/L2/L1 bytes, transactions, cache hit rates, and spills.</td>
+</tr>
+<tr>
+<td>Timing variance</td>
+<td>Duplicate <code>N=1024</code> runs show noticeable variance.</td>
+<td>Report medians, variance, warmups, synchronization, and fixed seeds.</td>
+</tr>
+</tbody></table>
+<p>The defensible claim is:</p>
+<pre><code class="language-text">The fused FlashAttention-style kernel substantially improves this controlled
+naive Triton baseline by avoiding quadratic intermediate traffic.
+</code></pre>
+<p>The not-yet-final claim would be:</p>
+<pre><code class="language-text">This implementation is production-grade or universally faster than PyTorch SDPA.
+</code></pre>
+<p>That stronger claim would require stricter parity, broader shapes, multiple dtypes, non-multiple dimensions, non-causal mode, masks, robust statistics, and hardware-counter profiling.</p>
+<h2>Main Takeaways</h2>
+<ul>
+<li>Naive Triton attention is correct but much slower than PyTorch&#39;s optimized attention path.</li>
+<li>Materializing full <code>S = QK^T</code> and <code>P = softmax(S)</code> creates expensive <code>O(N^2)</code> memory traffic.</li>
+<li>Online softmax enables exact attention while streaming K/V blocks.</li>
+<li>The mini FlashAttention-style kernel gives 3.63x to 7.71x speedup over the naive Triton baseline.</li>
+<li>Paged KV-cache layouts are useful for serving-style memory management but introduce fragmentation trade-offs.</li>
+<li>FlashAttention v2/split-k requires careful implementation; the experimental version here was slower and numerically unstable.</li>
+</ul>
+<h2>Experiment Result Analysis</h2>
+<p>The results show the difference between implementing attention directly and implementing it in an IO-aware way. The naive Triton kernel is useful as a baseline because it exposes the cost of materializing and processing full score/probability matrices. Even though it is correct, it is far slower than PyTorch&#39;s optimized attention path, especially at <code>N=1024</code>.</p>
+<p>The mini FlashAttention-style kernel demonstrates the key systems idea: performance improves when the kernel changes the memory behavior, not merely when it rewrites the same algorithm in Triton. By streaming K/V blocks and updating online softmax statistics, the Flash-style kernel avoids writing the full <code>S</code> and <code>P</code> matrices to DRAM. That is why it reaches up to 7.71x speedup over the naive Triton baseline.</p>
+<p>The v2/split-k experiment is also important. It shows that more parallelism can hurt if the reduction and numerical handling are not implemented carefully. In this repo, the v2 variant produced <code>nan</code> correctness values and slowed down as <code>N</code> increased. That makes the result useful for debugging: the next optimization step should focus on stable split-k accumulation, correct rescaling of online softmax statistics across partitions, and reducing inter-block merge overhead.</p>
+<p>Overall, this project shows why attention optimization is mainly an IO problem. The best kernel is not just the one with more parallel blocks; it is the one that minimizes global memory traffic while preserving numerically stable softmax semantics.</p>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>

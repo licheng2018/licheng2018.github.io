@@ -34,6 +34,7 @@ Ph.D. candidate focused on ML systems, compiler/runtime analysis, and GPU kernel
 - [IO-Aware Attention System with Triton and FlashAttention-style Optimization](projects/triton-flashattention.md)
 - [CUDA Kernel Development and Transformer Operator Optimization](projects/cuda-kernels.md)
 - [LLM Serving Benchmark and Inference Systems Analysis](projects/llm-serving.md)
+- [vLLM Scheduler Analysis and Chunked Prefill Optimization](projects/vllm.md)
 - [Distributed Training Optimization with FSDP, ZeRO, and Activation Checkpointing](projects/distributed-training.md)
 - [NCCL Parallelism and Communication Benchmarking](projects/nccl-parallelism.md)
 - [LLM Quantization Benchmark and Inference Optimization](projects/quantization.md)

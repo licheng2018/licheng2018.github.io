@@ -1,0 +1,182 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Python and C++ Common Functions</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>Python and C++ Common Functions</h1>
+<p>Quick reference for common data structures and utility functions used in coding interviews.</p>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Language</th>
+<th>Topics</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Python</td>
+<td><a href="#queue">Queue</a> · <a href="#set">Set</a> · <a href="#stack">Stack</a> · <a href="#hash-map--dictionary">Hash Map / Dictionary</a> · <a href="#heap">Heap</a> · <a href="#string-and-sorting">String and Sorting</a> · <a href="#string-utilities">String Utilities</a> · <a href="#common-constants-and-2d-arrays">Common Constants and 2D Arrays</a></td>
+</tr>
+<tr>
+<td>C++</td>
+<td><a href="#vector--2d-list">Vector / 2D List</a> · <a href="#sort">Sort</a> · <a href="#heap--priority-queue">Heap / Priority Queue</a> · <a href="#set-1">Set</a> · <a href="#string-utilities">String Utilities</a> · <a href="#queue--deque">Queue / Deque</a> · <a href="#stack-1">Stack</a> · <a href="#pair">Pair</a> · <a href="#common-constants-and-conversions">Common Constants and Conversions</a></td>
+</tr>
+</tbody></table>
+<h2>Python</h2>
+<h3>Queue</h3>
+<pre><code class="language-python">from collections import deque
+
+queue = deque([element])
+queue.append(element)      # push
+item = queue.popleft()     # pop from front
+</code></pre>
+<h3>Set</h3>
+<pre><code class="language-python">hash_set = set([1, 2, 3])
+hash_set.add(x)        # insert
+hash_set.remove(x)     # remove, raises KeyError if x is missing
+hash_set.discard(x)    # remove safely if x may be missing
+</code></pre>
+<h3>Stack</h3>
+<pre><code class="language-python">stack = []
+top = stack[-1]
+item = stack.pop()
+stack.append(char)
+</code></pre>
+<h3>Hash Map / Dictionary</h3>
+<pre><code class="language-python">key2val = {}
+
+if key in key2val:
+    pass
+
+key2val[key] = value
+del key2val[key]
+</code></pre>
+<h3>Heap</h3>
+<pre><code class="language-python">import heapq
+
+heap = []
+heapq.heappush(heap, element)
+smallest = heapq.heappop(heap)
+</code></pre>
+<h3>String and Sorting</h3>
+<pre><code class="language-python">s = &quot;abc&quot;
+
+joined = &quot; &quot;.join(words)
+hashable_key = tuple(s)
+sorted_num = sorted(nums)
+</code></pre>
+<h3>String Utilities</h3>
+<pre><code class="language-python">s = &quot;abc&quot;
+c = &quot;A&quot;
+
+ok1 = c.isalnum()
+ok2 = c.isalpha()
+ok3 = c.isdigit()
+lower = c.lower()
+upper = c.upper()
+
+lower_s = s.lower()
+upper_s = s.upper()
+
+reversed_s = s[::-1]
+s = s + &quot;xyz&quot;
+
+# If you need mutable append-style updates:
+chars = list(s)
+chars.append(&quot;z&quot;)
+s = &quot;&quot;.join(chars)
+</code></pre>
+<h3>Common Constants and 2D Arrays</h3>
+<pre><code class="language-python">max_num = float(&quot;inf&quot;)
+min_num = float(&quot;-inf&quot;)
+
+visited = [[0 for _ in range(n)] for _ in range(m)]
+</code></pre>
+<h2>C++</h2>
+<h3>Vector / 2D List</h3>
+<pre><code class="language-cpp">#include &lt;vector&gt;
+#include &lt;string&gt;
+using namespace std;
+
+vector&lt;vector&lt;string&gt;&gt; strlist;
+strlist.push_back(row);
+strlist.pop_back();
+
+vector&lt;vector&lt;int&gt;&gt; visited(m, vector&lt;int&gt;(n, 0));
+</code></pre>
+<h3>Sort</h3>
+<pre><code class="language-cpp">#include &lt;algorithm&gt;
+
+sort(intervals.begin(), intervals.end());
+</code></pre>
+<h3>Heap / Priority Queue</h3>
+<pre><code class="language-cpp">#include &lt;queue&gt;
+
+priority_queue&lt;pair&lt;int, int&gt;&gt; heap;  // max heap by default
+
+heap.push({a, b});
+auto top_item = heap.top();
+heap.pop();
+</code></pre>
+<p>For a min heap:</p>
+<pre><code class="language-cpp">priority_queue&lt;
+    pair&lt;int, int&gt;,
+    vector&lt;pair&lt;int, int&gt;&gt;,
+    greater&lt;pair&lt;int, int&gt;&gt;
+&gt; min_heap;
+</code></pre>
+<h3>Set</h3>
+<pre><code class="language-cpp">#include &lt;unordered_set&gt;
+
+unordered_set&lt;int&gt; num_set;
+num_set.insert(num);
+num_set.erase(num);
+</code></pre>
+<h3>String Utilities</h3>
+<pre><code class="language-cpp">#include &lt;string&gt;
+#include &lt;algorithm&gt;
+#include &lt;cctype&gt;
+
+string s = &quot;abc&quot;;
+
+bool ok1 = isalnum(c);
+bool ok2 = isalpha(c);
+bool ok3 = isdigit(c);
+char lower = tolower(c);
+char upper = toupper(c);
+
+reverse(s.begin(), s.end());
+s.append(&quot;xyz&quot;);
+
+transform(s.begin(), s.end(), s.begin(), ::tolower);
+transform(s.begin(), s.end(), s.begin(), ::toupper);
+</code></pre>
+<h3>Queue / Deque</h3>
+<pre><code class="language-cpp">#include &lt;deque&gt;
+
+deque&lt;pair&lt;int, int&gt;&gt; queue;
+
+queue.push_back({i, j});
+pair&lt;int, int&gt; node = queue.front();
+queue.pop_front();
+</code></pre>
+<h3>Stack</h3>
+<pre><code class="language-cpp">#include &lt;stack&gt;
+
+stack&lt;char&gt; stk;
+
+char top_char = stk.top();
+stk.pop();
+stk.push(char_value);
+</code></pre>
+<h3>Pair</h3>
+<pre><code class="language-cpp">pair&lt;int, int&gt; a;
+
+int x = a.first;
+int y = a.second;
+</code></pre>
+<h3>Common Constants and Conversions</h3>
+<pre><code class="language-cpp">#include &lt;climits&gt;
+#include &lt;string&gt;
+
+int max_number = INT_MAX;
+
+int value = stoi(s);
+string text = to_string(value);
+</code></pre>
+</main></body></html>

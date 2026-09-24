@@ -1,0 +1,1399 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Distributed Training Optimization with FSDP, ZeRO, and Activation Checkpointing</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>Distributed Training Optimization with FSDP, ZeRO, and Activation Checkpointing</h1>
+<p>This project builds a PyTorch distributed training workflow for GPT-Neo-1.3B and studies the memory/communication trade-offs behind DDP, ZeRO, FSDP, gradient accumulation, mixed precision, and activation checkpointing.</p>
+<p>Source repo: <a href="https://github.com/licheng2018/gpt_training/tree/main">gpt_training</a></p>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Jump to sections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Overview</td>
+<td><a href="#project-goal">Project Goal</a> · <a href="#benchmark-positioning">Benchmark Positioning</a> · <a href="#repository-structure">Repository Structure</a> · <a href="#code-architecture-and-training-flow">Code Architecture and Training Flow</a></td>
+</tr>
+<tr>
+<td>Training System</td>
+<td><a href="#distributed-training-fundamentals">Distributed Training Fundamentals</a> · <a href="#distributed-launch-and-nccl-setup">Distributed Launch and NCCL Setup</a> · <a href="#model-and-dataset-pipeline">Model and Dataset Pipeline</a> · <a href="#fp16-mixed-precision">FP16 Mixed Precision</a></td>
+</tr>
+<tr>
+<td>Parallelism</td>
+<td><a href="#data-parallel-training">Data Parallel Training</a> · <a href="#allreduce-and-communication">AllReduce and Communication</a> · <a href="#memory-consumption-in-large-models">Memory Consumption in Large Models</a> · <a href="#zero-and-fsdp">ZeRO and FSDP</a> · <a href="#model-tensor-and-pipeline-parallelism">Model, Tensor, and Pipeline Parallelism</a></td>
+</tr>
+<tr>
+<td>Experiments</td>
+<td><a href="#implementation-details">Implementation Details</a> · <a href="#microbatch-gradient-accumulation-and-global-batch">Microbatch, Gradient Accumulation, and Global Batch</a> · <a href="#ddp-nosync-optimization">DDP no_sync Optimization</a> · <a href="#experiment-matrix">Experiment Matrix</a> · <a href="#observable-metrics">Observable Metrics</a> · <a href="#activation-checkpointing">Activation Checkpointing</a></td>
+</tr>
+<tr>
+<td>Analysis</td>
+<td><a href="#expected-performance-patterns">Expected Performance Patterns</a> · <a href="#main-takeaways">Main Takeaways</a> · <a href="#experiment-result-analysis">Experiment Result Analysis</a></td>
+</tr>
+</tbody></table>
+<h2>Project Goal</h2>
+<p>The goal was to build a controlled multi-GPU training benchmark around GPT-Neo-1.3B, then use it to compare how DDP, FSDP, gradient accumulation, FP16, and activation checkpointing affect memory, throughput, and optimizer-step latency.</p>
+<p>This project is not primarily about fully training GPT-Neo on WikiText to convergence. It is a systems benchmark for validating a distributed training workflow and exposing practical trade-offs:</p>
+<ul>
+<li>Can GPT-Neo-1.3B be launched and trained correctly with <code>torchrun</code>?</li>
+<li>How much per-GPU memory does DDP require when every rank stores the full model state?</li>
+<li>How much memory can FSDP <code>FULL_SHARD</code> save by sharding parameters, gradients, and optimizer states?</li>
+<li>How do microbatch size and gradient accumulation affect throughput at fixed effective global batch size?</li>
+<li>How much memory does activation checkpointing save, and how much recomputation overhead does it introduce?</li>
+<li>When does synthetic data provide a cleaner systems measurement than WikiText?</li>
+<li>How should loss, step time, tokens/sec, and CUDA memory be measured across ranks?</li>
+</ul>
+<p>The overall workflow can be summarized as:</p>
+<pre><code class="language-text">GPT-Neo-1.3B causal language model
+        ↓
+FP16 mixed-precision training
+        ↓
+DDP or FSDP distributed strategy
+        ↓
+microbatch / gradient accumulation / checkpointing sweep
+        ↓
+measure loss, step time, tokens/s, peak allocated memory, peak reserved memory
+</code></pre>
+<h2>Benchmark Positioning</h2>
+<p>The core experimental object is:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Choice</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Model</td>
+<td><code>EleutherAI/gpt-neo-1.3B</code></td>
+</tr>
+<tr>
+<td>Dataset</td>
+<td>WikiText-103 or synthetic token stream</td>
+</tr>
+<tr>
+<td>Precision</td>
+<td>FP16 mixed precision</td>
+</tr>
+<tr>
+<td>Distributed launch</td>
+<td><code>torchrun</code></td>
+</tr>
+<tr>
+<td>Communication backend</td>
+<td>NCCL</td>
+</tr>
+<tr>
+<td>Strategies</td>
+<td>DDP and FSDP <code>FULL_SHARD</code></td>
+</tr>
+<tr>
+<td>Key knobs</td>
+<td><code>seq_len</code>, <code>microbatch</code>, <code>grad_accum</code>, <code>checkpoint</code></td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>loss, step time, tokens/sec, max allocated memory, max reserved memory</td>
+</tr>
+</tbody></table>
+<p>The distinction matters because the expected output is not a final language-model checkpoint or best perplexity. The expected output is a controlled comparison of memory and throughput behavior under different distributed training strategies.</p>
+<h2>Repository Structure</h2>
+<table>
+<thead>
+<tr>
+<th>File / script</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>train.py</code></td>
+<td>Main distributed training script with DDP/FSDP strategy selection.</td>
+</tr>
+<tr>
+<td><code>train_check_point.py</code></td>
+<td>Training script variant with activation checkpointing flag.</td>
+</tr>
+<tr>
+<td><code>scripts/run_ddp_wikitext.sh</code></td>
+<td>DDP run on Wikitext with GPT-Neo-1.3B.</td>
+</tr>
+<tr>
+<td><code>scripts/run_fsdp_wikitext.sh</code></td>
+<td>Sweep script for multi-GPU Wikitext runs.</td>
+</tr>
+<tr>
+<td><code>scripts/ddp_ckpt_on.sh</code>, <code>ddp_ckpt_off.sh</code></td>
+<td>DDP checkpointing comparison.</td>
+</tr>
+<tr>
+<td><code>scripts/fsdp_ckpt_on.sh</code>, <code>fsdp_ckpt_off.sh</code></td>
+<td>FSDP checkpointing comparison.</td>
+</tr>
+<tr>
+<td><code>scripts/sweep.sh</code>, <code>sweep_min.sh</code></td>
+<td>Sweeps over strategy, checkpointing, microbatch size, and gradient accumulation.</td>
+</tr>
+</tbody></table>
+<h2>Code Architecture and Training Flow</h2>
+<p><img src="../assets/projects/distributed-training/distributed-gpt-training-system-overview.png" alt="Distributed GPT training end-to-end system overview"></p>
+<p><img src="../assets/projects/distributed-training/ddp-vs-fsdp-memory-communication-dataflow.png" alt="DDP vs FSDP memory and communication dataflow"></p>
+<p><img src="../assets/projects/distributed-training/gradient-accumulation-microbatch-global-batch.png" alt="Gradient accumulation from microbatch to global batch"></p>
+<p><img src="../assets/projects/distributed-training/distributed-training-comprehensive-summary.png" alt="Distributed GPT training summary with DDP, FSDP, gradient accumulation, bucketing, autowrap, and activation checkpointing"></p>
+<p><img src="../assets/projects/distributed-training/ddp-vs-fsdp-benchmark-performance-tradeoff.png" alt="DDP vs FSDP benchmark and performance trade-off"></p>
+<p>The codebase can be understood as a layered training benchmark rather than a single monolithic script. Each layer isolates one part of the distributed training system:</p>
+<p><img src="../assets/projects/distributed-training/gpt-training-architecture.svg" alt="GPT-Neo distributed training architecture"></p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Code responsibility</th>
+<th>What it controls</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Run scripts</td>
+<td>Launch repeatable experiment configurations.</td>
+<td>Strategy, checkpointing, sequence length, microbatch, gradient accumulation, number of GPUs.</td>
+</tr>
+<tr>
+<td>Distributed bootstrap</td>
+<td>Start one process per GPU and initialize NCCL.</td>
+<td><code>RANK</code>, <code>LOCAL_RANK</code>, <code>WORLD_SIZE</code>, device binding, process group.</td>
+</tr>
+<tr>
+<td>Model setup</td>
+<td>Load GPT-Neo-1.3B for causal language modeling.</td>
+<td>Hugging Face tokenizer/model, <code>model.train()</code>, <code>use_cache=False</code>.</td>
+</tr>
+<tr>
+<td>Dataset pipeline</td>
+<td>Build either real or synthetic token batches.</td>
+<td>WikiText token stream, synthetic tokens, fixed <code>seq_len</code>, shifted labels.</td>
+</tr>
+<tr>
+<td>Precision layer</td>
+<td>Run mixed-precision training safely.</td>
+<td>FP16 autocast, <code>GradScaler</code>, unscale, gradient clipping.</td>
+</tr>
+<tr>
+<td>Distributed strategy</td>
+<td>Wrap the model with DDP or FSDP.</td>
+<td>DDP full replica, FSDP <code>FULL_SHARD</code>, GPT-Neo block auto-wrapping.</td>
+</tr>
+<tr>
+<td>Training loop</td>
+<td>Execute microbatch accumulation and optimizer steps.</td>
+<td><code>loss / grad_accum</code>, DDP <code>no_sync()</code>, final synchronization, <code>optimizer.step()</code>.</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>Report comparable benchmark outputs.</td>
+<td>Loss, step time, tokens/sec, max allocated memory, max reserved memory.</td>
+</tr>
+</tbody></table>
+<p>The main code path is:</p>
+<pre><code class="language-text">run script
+  -&gt; torchrun launch
+  -&gt; distributed init with NCCL
+  -&gt; load tokenizer and GPT-Neo-1.3B
+  -&gt; build WikiText or synthetic dataloader
+  -&gt; enable FP16 and optional checkpointing
+  -&gt; wrap model with DDP or FSDP
+  -&gt; run gradient-accumulation training loop
+  -&gt; synchronize metrics across ranks
+</code></pre>
+<p>This structure is useful for interviews because each part corresponds to a concrete systems question:</p>
+<table>
+<thead>
+<tr>
+<th>Code part</th>
+<th>Interview question it answers</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>torchrun</code> + NCCL setup</td>
+<td>How does each process know which GPU and rank it owns?</td>
+</tr>
+<tr>
+<td>WikiText vs synthetic data</td>
+<td>How do you separate model-system performance from data-pipeline overhead?</td>
+</tr>
+<tr>
+<td>DDP wrapper</td>
+<td>What is replicated, and when does AllReduce happen?</td>
+</tr>
+<tr>
+<td>FSDP wrapper</td>
+<td>What is sharded, and when are parameters gathered?</td>
+</tr>
+<tr>
+<td>FP16 + GradScaler</td>
+<td>Why can mixed precision improve throughput, and why is scaling needed?</td>
+</tr>
+<tr>
+<td>Gradient accumulation</td>
+<td>How do you keep effective global batch fixed under memory limits?</td>
+</tr>
+<tr>
+<td>DDP <code>no_sync()</code></td>
+<td>How do you avoid redundant communication during accumulation?</td>
+</tr>
+<tr>
+<td>Checkpointing</td>
+<td>How do you trade recomputation for lower activation memory?</td>
+</tr>
+<tr>
+<td>Metrics logging</td>
+<td>How do you compare strategies fairly across ranks?</td>
+</tr>
+</tbody></table>
+<h2>Distributed Training Fundamentals</h2>
+<p>This section integrates the foundational material from the review notes, covering Sections <code>4.1</code> to <code>4.7</code>. The main idea is that distributed training is a joint compute, memory, and communication problem:</p>
+<pre><code class="language-text">Data parallelism:      split samples, replicate model.
+Tensor parallelism:    split operations inside layers.
+Pipeline parallelism:  split layer stacks into stages.
+ZeRO/FSDP:             shard persistent states that DDP would replicate.
+</code></pre>
+<p>A method can make a model fit without making each training step faster. This distinction is central to interpreting DDP, FSDP, and checkpointing results.</p>
+<table>
+<thead>
+<tr>
+<th>PDF section</th>
+<th>Concept integrated here</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>4.1</code></td>
+<td>Global batch, local batch, microbatch, gradient accumulation, useful tokens.</td>
+</tr>
+<tr>
+<td><code>4.2</code></td>
+<td>DDP execution, gradient AllReduce, bucketing, communication-computation overlap.</td>
+</tr>
+<tr>
+<td><code>4.3</code></td>
+<td>ZeRO stages, FSDP full-shard lifecycle, AllGather, ReduceScatter, auto-wrap policy.</td>
+</tr>
+<tr>
+<td><code>4.4</code></td>
+<td>Activation memory, checkpointing, mixed precision dtype choices.</td>
+</tr>
+<tr>
+<td><code>4.5</code></td>
+<td>Persistent model states and complete peak memory accounting.</td>
+</tr>
+<tr>
+<td><code>4.6</code></td>
+<td>Step time, tokens/sec, peak memory, profiler diagnosis.</td>
+</tr>
+<tr>
+<td><code>4.7</code></td>
+<td>Why FSDP can be slower than DDP and how to compare them fairly.</td>
+</tr>
+</tbody></table>
+<h3>4.1 Training Batch and Execution Model</h3>
+<p>Let:</p>
+<pre><code class="language-text">N_DP     = data-parallel degree
+B_micro  = samples processed by one rank in one forward/backward pair
+K_acc    = number of accumulated microbatches
+</code></pre>
+<p>The effective global batch is:</p>
+<pre><code class="language-text">B_global = N_DP * B_micro * K_acc
+</code></pre>
+<p>The term <code>local batch</code> can be ambiguous. Some codebases use it to mean one microbatch; others use it to mean all samples processed by one rank before an optimizer step, or <code>B_micro * K_acc</code>. For this project, it is safer to explicitly state <code>microbatch</code> and <code>grad_accum</code>.</p>
+<p>For variable-length sequence training, tokens per optimizer step can be a better work measure than sample count:</p>
+<pre><code class="language-text">T_global = sum over ranks and accumulation steps of actual tokens processed
+</code></pre>
+<p>This matters because padded tokens consume compute but are not useful training data. Packed-sequence benchmarks should distinguish useful tokens from executed tokens.</p>
+<p>Gradient accumulation runs several forward/backward pairs before one optimizer update:</p>
+<pre><code class="language-text">zero gradients
+for k in accumulation steps:
+    forward(microbatch[k])
+    backward(loss[k] / K_acc)
+synchronize final gradients
+optimizer step
+</code></pre>
+<p>The activation memory of accumulation is controlled mainly by the microbatch, not by the full effective batch, because activations from one microbatch can normally be released after its backward pass. Accumulation does not shard parameters, gradients, or optimizer states. It also does not increase same-instant GPU parallelism, so very small microbatches may reduce GEMM efficiency.</p>
+<h3>4.2 Distributed Data Parallel</h3>
+<p>In DDP, every rank holds a complete model replica, computes gradients on a different data slice, synchronizes gradients, and performs the same optimizer update.</p>
+<p>If rank <code>r</code> produces gradient <code>g_r</code>, the desired average gradient is:</p>
+<pre><code class="language-text">g = (1 / N_DP) * sum_r g_r
+</code></pre>
+<p>The collective may sum gradients and let the framework divide separately. Identical initial parameters plus identical reduced gradients keep all model replicas synchronized. Standard DDP does not reduce per-rank parameter, gradient, or optimizer-state memory.</p>
+<p><img src="../assets/projects/distributed-training/data-parallelism.png" alt="Data parallelism"></p>
+<p>AllReduce combines every rank&#39;s tensor and returns the result to every rank. Ring AllReduce can be understood as:</p>
+<pre><code class="language-text">ReduceScatter + AllGather
+</code></pre>
+<p>For <code>p</code> ranks and message size <code>M</code>, each rank transfers approximately:</p>
+<pre><code class="language-text">2 * (p - 1) / p * M
+</code></pre>
+<p>in the bandwidth term. A simple latency-bandwidth model is:</p>
+<pre><code class="language-text">T_ring ~= 2 * (p - 1) * alpha + [2 * (p - 1) / p] * M / beta
+</code></pre>
+<p>where <code>alpha</code> is per-step latency and <code>beta</code> is effective bandwidth. Ring is bandwidth-efficient for large messages but has <code>O(p)</code> phases. Tree algorithms use fewer phases and can be better for smaller messages. Real collective libraries choose rings, trees, or topology-aware variants depending on size and hardware.</p>
+<p><img src="../assets/projects/distributed-training/allreduce-comparison.png" alt="AllReduce comparison"></p>
+<p>DDP also uses gradient bucketing. Backward produces gradients in reverse graph order, so DDP groups parameters into buckets and launches an AllReduce once all gradients in a bucket are ready. This allows later backward computation to overlap communication.</p>
+<table>
+<thead>
+<tr>
+<th>Bucket choice</th>
+<th>Benefit</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Small buckets</td>
+<td>Start communication earlier.</td>
+<td>Many latency-dominated collectives and more framework overhead.</td>
+</tr>
+<tr>
+<td>Large buckets</td>
+<td>Better bandwidth efficiency.</td>
+<td>Become ready later, reduce overlap, need larger buffers, and may leave a long communication tail.</td>
+</tr>
+</tbody></table>
+<p>An optimistic overlap model is:</p>
+<pre><code class="language-text">T_step ~= T_forward + max(T_backward, T_communication) + T_optimizer
+</code></pre>
+<p>Only communication that overlaps independent backward compute can be hidden. The final bucket often creates an exposed tail because there is no later backward work left to cover it.</p>
+<h3>4.3 ZeRO and FSDP</h3>
+<p>Let:</p>
+<pre><code class="language-text">M_P = parameter memory
+M_G = gradient memory
+M_O = optimizer-state memory
+p   = number of ranks
+</code></pre>
+<p>Ideal persistent model-state memory per rank is:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Parameters</th>
+<th>Gradients</th>
+<th>Optimizer states</th>
+<th>Ideal persistent state per rank</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DDP</td>
+<td>replicated</td>
+<td>replicated</td>
+<td>replicated</td>
+<td><code>M_P + M_G + M_O</code></td>
+</tr>
+<tr>
+<td>ZeRO-1</td>
+<td>replicated</td>
+<td>replicated</td>
+<td>sharded</td>
+<td><code>M_P + M_G + M_O / p</code></td>
+</tr>
+<tr>
+<td>ZeRO-2</td>
+<td>replicated</td>
+<td>sharded</td>
+<td>sharded</td>
+<td><code>M_P + M_G / p + M_O / p</code></td>
+</tr>
+<tr>
+<td>ZeRO-3 / FSDP full shard</td>
+<td>sharded</td>
+<td>sharded</td>
+<td>sharded</td>
+<td><code>M_P / p + M_G / p + M_O / p</code></td>
+</tr>
+</tbody></table>
+<p>These equations omit activations, temporary full parameters, communication buffers, workspaces, allocator fragmentation, and CUDA context overhead. ZeRO and FSDP do not automatically shard activations.</p>
+<p><img src="../assets/projects/distributed-training/zero-overview.png" alt="ZeRO overview"></p>
+<p>For one FSDP-wrapped unit, the full-shard lifecycle is:</p>
+<pre><code class="language-text">1. Hold parameter shards at rest.
+2. AllGather parameter shards before forward.
+3. Compute forward with temporary full parameters.
+4. Optionally reshard or free full parameters after forward.
+5. AllGather again before backward if parameters were resharded.
+6. Compute local gradient contributions.
+7. ReduceScatter gradients so each rank keeps only its shard.
+8. Update local parameter shard with local optimizer-state shard.
+</code></pre>
+<p><img src="../assets/projects/distributed-training/fsdp-collectives.png" alt="FSDP collectives"></p>
+<p>AllGather materializes full parameters for the current unit:</p>
+<pre><code class="language-text">W = AllGather(W_1, W_2, ..., W_p)
+</code></pre>
+<p>This temporary full tensor contributes to peak memory. ReduceScatter reduces gradients and distributes non-overlapping shards, avoiding a full AllReduce result that would be mostly discarded.</p>
+<p>Auto-wrap policy defines the unit of parameter gathering, resharding, and gradient scattering. Transformer-block wrapping is a common starting point.</p>
+<table>
+<thead>
+<tr>
+<th>Wrapping granularity</th>
+<th>Problem</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Too coarse</td>
+<td>Large temporary full parameters, high peak memory, long residency, fewer overlap opportunities.</td>
+</tr>
+<tr>
+<td>Too fine</td>
+<td>Many small latency-dominated collectives, CPU launch overhead, metadata overhead, too little compute per communication.</td>
+</tr>
+</tbody></table>
+<p>The wrap policy should be profiled on the target topology and should avoid incorrectly splitting shared parameters.</p>
+<h3>4.4 Activation Checkpointing and Mixed Precision</h3>
+<p>Backward may need normalization inputs and statistics, Q/K/V or selected attention state, residuals, MLP pre-activations, gate/up outputs, and dropout state. A rough activation memory model is:</p>
+<pre><code class="language-text">M_act proportional to B_micro * S * d_model * L
+</code></pre>
+<p>where <code>S</code> is sequence length and <code>L</code> is the number of layers. Naive attention may also create sequence-squared intermediates. Fused attention and selective saved tensors change the exact set of activations.</p>
+<p>Activation checkpointing saves selected boundary activations and recomputes missing forward regions during backward:</p>
+<pre><code class="language-text">save less activation state
+        ↓
+recompute during backward
+        ↓
+lower memory, higher compute and launch overhead
+</code></pre>
+<p>Fine-grained checkpointing can save more intermediate state but introduces many boundaries and framework overhead. Coarse-grained checkpointing repeats larger regions of computation. Random operations must reproduce correct RNG behavior during recomputation.</p>
+<p>Checkpointing usually slows the same microbatch. Its system value appears when saved memory enables a larger microbatch, longer sequence, or otherwise more efficient shape. FSDP reduces model-state memory, while checkpointing reduces activation memory. They solve different memory components and are often combined.</p>
+<p>Mixed-precision training can use different dtypes for:</p>
+<table>
+<thead>
+<tr>
+<th>Training component</th>
+<th>Possible dtype choices</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Stored parameters</td>
+<td>FP16, BF16, FP32, or sharded policy-specific dtype.</td>
+</tr>
+<tr>
+<td>Forward/backward compute</td>
+<td>FP16/BF16/TF32/FP32 depending on hardware and autocast policy.</td>
+</tr>
+<tr>
+<td>Reductions and gradient communication</td>
+<td>Often configurable separately in FSDP.</td>
+</tr>
+<tr>
+<td>Master weights and optimizer states</td>
+<td>Commonly FP32 for stability.</td>
+</tr>
+<tr>
+<td>Sensitive operations</td>
+<td>Often kept in higher precision.</td>
+</tr>
+</tbody></table>
+<p>FP16 often requires loss scaling because its exponent range is narrow. BF16 has FP32-like range and usually avoids loss scaling, although reductions and optimizer states commonly remain FP32. FP8 training requires explicit scaling or amax tracking, supported matrix kernels, and higher-precision accumulation.</p>
+<h3>4.5 Training Memory Accounting</h3>
+<p>For mixed-precision Adam, one model parameter may correspond to several persistent states:</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Typical dtype</th>
+<th align="right">Bytes per parameter</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Model parameter</td>
+<td>FP16/BF16</td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td>FP32 master parameter, if present</td>
+<td>FP32</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>Gradient</td>
+<td>FP16/BF16 or FP32</td>
+<td align="right">2 or 4</td>
+</tr>
+<tr>
+<td>First moment</td>
+<td>FP32</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>Second moment</td>
+<td>FP32</td>
+<td align="right">4</td>
+</tr>
+</tbody></table>
+<p>Persistent states therefore often require roughly <code>12-16 bytes</code> per parameter depending on the master-copy and gradient implementation. A billion parameters can require <code>12-16 GB</code> before activations, temporary buffers, and fragmentation.</p>
+<p>Complete peak memory is closer to:</p>
+<pre><code class="language-text">M_peak ~= M_P + M_G + M_O + M_act
+        + M_comm + M_workspace + M_allocator
+</code></pre>
+<p><code>M_comm</code> includes DDP buckets and FSDP collective buffers. Workspaces include storage used by attention, GEMM, and fused optimizers. Allocated and reserved memory differ because fragmentation and cached blocks can make reserved memory substantially larger. Memory should be recorded by rank and by phase because one imbalanced rank can OOM the whole job.</p>
+<h3>4.6 Performance Measurement and Diagnosis</h3>
+<p>A measured optimizer step can be decomposed as:</p>
+<pre><code class="language-text">T_step = T_data
+       + T_forward
+       + T_backward
+       + T_comm_exposed
+       + T_optimizer
+       + T_misc
+</code></pre>
+<p>With uniform sequence length:</p>
+<pre><code class="language-text">tokens/sec = B_global * S / T_step
+</code></pre>
+<p>For variable-length data, the benchmark should state whether it reports useful tokens or executed tokens. Steady-state cluster tokens/sec, tokens/sec/GPU, and step-time breakdown should be reported separately. Compilation, evaluation, checkpoint saving, and first-step initialization should be excluded or separately reported.</p>
+<p>The review notes give a practical diagnosis table:</p>
+<table>
+<thead>
+<tr>
+<th>Observation</th>
+<th>Likely cause</th>
+<th>Next experiment</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Long AllReduce tail</td>
+<td>Late or large bucket, little overlap.</td>
+<td>Adjust bucket size and inspect gradient-ready order.</td>
+</tr>
+<tr>
+<td>Many short collectives</td>
+<td>Buckets or wrapped units are too fine.</td>
+<td>Increase message granularity.</td>
+</tr>
+<tr>
+<td>FSDP gather memory spike</td>
+<td>Wrapped unit too large or prefetch too aggressive.</td>
+<td>Reduce wrap size or prefetch depth.</td>
+</tr>
+<tr>
+<td>Rank wait imbalance</td>
+<td>Input/sequence skew or host delay.</td>
+<td>Compare per-rank traces.</td>
+</tr>
+<tr>
+<td>Checkpoint saves memory but slows</td>
+<td>Recomputation did not enable a better workload shape.</td>
+<td>Compare the largest feasible microbatch.</td>
+</tr>
+<tr>
+<td>Low utilization</td>
+<td>Tiny microbatch, communication, or launch overhead.</td>
+<td>Increase local work and inspect timeline gaps.</td>
+</tr>
+</tbody></table>
+<h3>4.7 Why FSDP Can Be Slower Than DDP</h3>
+<p>DDP already owns full parameters and mainly needs gradient AllReduce. FSDP adds:</p>
+<pre><code class="language-text">parameter AllGather before each wrapped unit
+possible second AllGather before backward
+reshard / unshard work
+gradient ReduceScatter
+buffer management
+more collective launches
+</code></pre>
+<p>FSDP is commonly slower in small experiments when:</p>
+<ul>
+<li>The model fits comfortably under DDP.</li>
+<li>Microbatches and per-unit compute are small.</li>
+<li>Wrapping is too fine, or prefetch cannot hide gathers.</li>
+<li>The topology is slow or crosses PCIe/network boundaries.</li>
+<li>Activation checkpointing adds recomputation at the same time.</li>
+<li>Saved memory is not used to increase microbatch, sequence length, or model size.</li>
+<li>Initialization or first-step effects contaminate the benchmark.</li>
+</ul>
+<p>A fair comparison needs two views:</p>
+<table>
+<thead>
+<tr>
+<th>View</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Hold microbatch and semantics constant</td>
+<td>Measures direct FSDP overhead.</td>
+</tr>
+<tr>
+<td>Tune each method to its largest efficient shape</td>
+<td>Measures whether FSDP&#39;s memory savings enable a better workload.</td>
+</tr>
+</tbody></table>
+<p>The interview-ready answer is:</p>
+<pre><code class="language-text">FSDP is primarily a memory-scaling method, not a promise of speedup.
+It becomes valuable when sharding makes the model fit or enables a more efficient workload shape,
+and when gathers/scatters are large enough and well overlapped.
+For a small model and tiny microbatch, DDP&#39;s simpler path can easily be faster.
+</code></pre>
+<h2>Distributed Launch and NCCL Setup</h2>
+<p>The project launches one Python process per GPU with <code>torchrun</code>. A typical 4-GPU run uses:</p>
+<pre><code class="language-text">torchrun --nproc_per_node=4 train_check_point.py
+</code></pre>
+<p>Each process reads distributed metadata from environment variables:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>RANK</code></td>
+<td>Global process index in the distributed job.</td>
+</tr>
+<tr>
+<td><code>LOCAL_RANK</code></td>
+<td>GPU index used by the process on the current node.</td>
+</tr>
+<tr>
+<td><code>WORLD_SIZE</code></td>
+<td>Total number of distributed processes, usually equal to total GPUs for single-node runs.</td>
+</tr>
+</tbody></table>
+<p>The script then binds the process to its GPU and initializes the process group:</p>
+<pre><code class="language-python">torch.cuda.set_device(local_rank)
+
+dist.init_process_group(
+    backend=&quot;nccl&quot;,
+    init_method=&quot;env://&quot;
+)
+</code></pre>
+<p>For a 4-GPU single-node run, the mapping is:</p>
+<table>
+<thead>
+<tr>
+<th>Process</th>
+<th>GPU</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Process 0</td>
+<td>GPU 0</td>
+</tr>
+<tr>
+<td>Process 1</td>
+<td>GPU 1</td>
+</tr>
+<tr>
+<td>Process 2</td>
+<td>GPU 2</td>
+</tr>
+<tr>
+<td>Process 3</td>
+<td>GPU 3</td>
+</tr>
+</tbody></table>
+<p>NCCL handles the GPU collective communication used by DDP and FSDP. This project uses those collectives inside a training system, while the separate NCCL project studies the communication primitives themselves.</p>
+<h2>Model and Dataset Pipeline</h2>
+<p>The default model is loaded through Hugging Face:</p>
+<pre><code class="language-python">AutoTokenizer.from_pretrained(...)
+AutoModelForCausalLM.from_pretrained(...)
+</code></pre>
+<p>The model is placed in training mode and inference KV cache is disabled:</p>
+<pre><code class="language-python">model.train()
+model.config.use_cache = False
+</code></pre>
+<p>Disabling <code>use_cache</code> is the right behavior for training. KV cache is useful during autoregressive inference because it avoids recomputing historical keys and values during decoding. In training, the full sequence is normally processed in one forward pass, and gradient checkpointing is generally incompatible with <code>use_cache=True</code>.</p>
+<p>The project supports two data modes:</p>
+<table>
+<thead>
+<tr>
+<th>Dataset mode</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>WikiText-103</td>
+<td>Validates the real language-model training path and checks whether loss behaves reasonably.</td>
+</tr>
+<tr>
+<td>Synthetic tokens</td>
+<td>Removes dataset download, tokenization, disk I/O, and preprocessing variation so the benchmark focuses on model compute, GPU memory, and distributed communication.</td>
+</tr>
+</tbody></table>
+<p>For WikiText, the pipeline concatenates raw text, tokenizes it into a continuous token stream, slices fixed-length sequences, and constructs causal language-model labels by shifting by one token.</p>
+<p>For example:</p>
+<pre><code class="language-text">raw tokens = [10, 20, 30, 40, 50]
+
+input_ids = [10, 20, 30, 40]
+labels    = [20, 30, 40, 50]
+</code></pre>
+<p>The model learns:</p>
+<pre><code class="language-text">given 10          -&gt; predict 20
+given 10,20       -&gt; predict 30
+given 10,20,30    -&gt; predict 40
+</code></pre>
+<p>The resulting tensors have shape:</p>
+<pre><code class="language-text">input_ids: [microbatch, seq_len]
+labels:    [microbatch, seq_len]
+</code></pre>
+<p>Synthetic data uses random token IDs from the model vocabulary. It is not meant to prove model quality; it is meant to produce stable systems measurements.</p>
+<h2>FP16 Mixed Precision</h2>
+<p>The project supports FP16 training with:</p>
+<pre><code class="language-text">--fp16
+</code></pre>
+<p>Forward computation runs under autocast:</p>
+<pre><code class="language-python">torch.cuda.amp.autocast(dtype=torch.float16)
+</code></pre>
+<p>and training uses <code>GradScaler</code>:</p>
+<pre><code class="language-text">forward under FP16 autocast
+        ↓
+calculate loss
+        ↓
+scale loss
+        ↓
+backward
+        ↓
+unscale gradients
+        ↓
+gradient clipping
+        ↓
+optimizer.step()
+        ↓
+scaler.update()
+</code></pre>
+<p><code>GradScaler</code> is needed because FP16 has a limited numeric range. Small gradients may underflow to zero. Scaling the loss also scales the gradients during backward, then gradients are unscaled before clipping and the optimizer update.</p>
+<p>Expected effects:</p>
+<table>
+<thead>
+<tr>
+<th>Effect</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Lower activation memory</td>
+<td>FP16 activations are smaller than FP32 activations.</td>
+</tr>
+<tr>
+<td>Lower communication/storage for some tensors</td>
+<td>Reduced dtype can reduce transferred bytes when supported by the strategy.</td>
+</tr>
+<tr>
+<td>Tensor Core use</td>
+<td>Large matrix operations can run faster in mixed precision.</td>
+</tr>
+<tr>
+<td>Not always faster</td>
+<td>If the run is communication-bound, launch-bound, or too small to saturate GPUs, FP16 alone may not dominate runtime.</td>
+</tr>
+</tbody></table>
+<h2>Data Parallel Training</h2>
+<p>Data parallelism replicates the model on each GPU, partitions the training data into batches, computes gradients independently, and aggregates gradients across workers.</p>
+<p><img src="../assets/projects/distributed-training/data-parallelism.png" alt="Data parallelism"></p>
+<p>The core limitation is memory redundancy: every GPU stores a full copy of the model parameters, gradients, and optimizer states. That becomes a problem for billion-parameter language models.</p>
+<p>In the DDP baseline, each GPU executes:</p>
+<pre><code class="language-text">different local batch
+        ↓
+forward
+        ↓
+backward
+        ↓
+gradient AllReduce
+        ↓
+same averaged gradient on every GPU
+        ↓
+local optimizer update
+</code></pre>
+<p>Conceptually:</p>
+<pre><code class="language-text">GPU 0 gradient ─┐
+GPU 1 gradient ─┤
+GPU 2 gradient ─┼─ NCCL AllReduce
+GPU 3 gradient ─┘
+                  ↓
+          synchronized gradients
+</code></pre>
+<p>DDP is often fast because the model replica is local and gradient synchronization can overlap with backward computation. Its cost is memory redundancy. Every GPU stores the full parameters, gradients, and optimizer states. With AdamW, optimizer state can be especially expensive because it includes moment estimates and, depending on the setup, FP32 master weights.</p>
+<h2>AllReduce and Communication</h2>
+<p>Gradient aggregation can be implemented with different collective strategies such as naive AllReduce, ring AllReduce, tree AllReduce, and butterfly AllReduce.</p>
+<p><img src="../assets/projects/distributed-training/allreduce-comparison.png" alt="AllReduce comparison"></p>
+<p>For DDP, gradient synchronization is central to training performance. The repo uses PyTorch distributed with NCCL and reports averaged metrics across ranks using distributed reductions.</p>
+<h2>Memory Consumption in Large Models</h2>
+<p>For large models, parameter memory is only part of the cost. Training also needs gradients, optimizer states, and activations.</p>
+<p><img src="../assets/projects/distributed-training/memory-consumption.png" alt="Memory consumption"></p>
+<p>For a 1B parameter model, a common memory estimate includes:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th align="right">Approx. memory per parameter</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FP16 parameters</td>
+<td align="right">2 bytes</td>
+</tr>
+<tr>
+<td>FP16 gradients</td>
+<td align="right">2 bytes</td>
+</tr>
+<tr>
+<td>FP32 optimizer states and master weights</td>
+<td align="right">much larger, often around 16 bytes total</td>
+</tr>
+</tbody></table>
+<p>This means a 1B parameter model can require around 20GB/GPU before counting input batches and activations.</p>
+<h2>ZeRO and FSDP</h2>
+<p>ZeRO reduces redundancy across data-parallel workers:</p>
+<ul>
+<li><strong>ZeRO Stage 1:</strong> partition optimizer states.</li>
+<li><strong>ZeRO Stage 2:</strong> partition gradients.</li>
+<li><strong>ZeRO Stage 3:</strong> partition parameters.</li>
+</ul>
+<p><img src="../assets/projects/distributed-training/zero-overview.png" alt="ZeRO overview"></p>
+<p><img src="../assets/projects/distributed-training/zero-stages.png" alt="ZeRO stages"></p>
+<p>PyTorch FSDP is closely related to ZeRO Stage 3. It shards model parameters across GPUs, gathers full parameters only when needed for computation, and reduce-scatters gradients after backward.</p>
+<p><img src="../assets/projects/distributed-training/fsdp-collectives.png" alt="FSDP collectives"></p>
+<p>In this project, FSDP uses:</p>
+<pre><code class="language-python">FSDP(
+    model,
+    sharding_strategy=ShardingStrategy.FULL_SHARD,
+    auto_wrap_policy=auto_wrap,
+    mixed_precision=mp,
+    use_orig_params=True
+)
+</code></pre>
+<p>The auto-wrap policy uses <code>GPTNeoBlock</code> as the wrapping unit:</p>
+<pre><code class="language-text">transformer_layer_cls = {GPTNeoBlock}
+</code></pre>
+<p>This means FSDP operates around Transformer block boundaries rather than wrapping the entire model as a single unit. <code>FULL_SHARD</code> is similar to ZeRO Stage 3 because it shards:</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>DDP</th>
+<th>FSDP <code>FULL_SHARD</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Parameters</td>
+<td>Full copy on each GPU</td>
+<td>Sharded across GPUs, gathered when needed.</td>
+</tr>
+<tr>
+<td>Gradients</td>
+<td>Full copy on each GPU</td>
+<td>Reduce-scattered so each GPU keeps a shard.</td>
+</tr>
+<tr>
+<td>Optimizer states</td>
+<td>Full copy on each GPU</td>
+<td>Sharded across GPUs.</td>
+</tr>
+</tbody></table>
+<p>With 4 GPUs, this can be roughly understood as:</p>
+<pre><code class="language-text">GPU 0: shard 0
+GPU 1: shard 1
+GPU 2: shard 2
+GPU 3: shard 3
+</code></pre>
+<p>However, computation still needs full parameters for the current FSDP unit. FSDP therefore trades persistent memory for communication and temporary reconstruction.</p>
+<h3>FSDP Forward and Backward Flow</h3>
+<p>Forward pass:</p>
+<ol>
+<li>Divide model parameters into FSDP units.</li>
+<li>Shard each unit across GPUs.</li>
+<li>All-gather the parameters needed for a unit.</li>
+<li>Run forward.</li>
+<li>Discard gathered full parameters after use.</li>
+</ol>
+<p><img src="../assets/projects/distributed-training/fsdp-allgather.png" alt="FSDP all-gather"></p>
+<p>Backward pass:</p>
+<ol>
+<li>All-gather parameters again for the unit.</li>
+<li>Compute gradients.</li>
+<li>Reduce-scatter gradients so each GPU keeps only its shard.</li>
+</ol>
+<p><img src="../assets/projects/distributed-training/fsdp-reducescatter.png" alt="FSDP reduce-scatter"></p>
+<p>The main trade-off is:</p>
+<pre><code class="language-text">lower resident model-state memory
+        ↕
+more AllGather, ReduceScatter, scheduling, and temporary-buffer overhead
+</code></pre>
+<p>This is why FSDP is primarily a memory-scalability technique. It may allow larger models, longer sequences, or larger microbatches to fit, but it is not guaranteed to be faster than DDP on smaller GPU counts or slower interconnects.</p>
+<h2>Model, Tensor, and Pipeline Parallelism</h2>
+<p>The PDF notes also cover why data parallelism alone is not enough. If every GPU must store the full model, data parallelism cannot train models that exceed device memory.</p>
+<p>Tensor parallelism partitions computation inside layers.</p>
+<p><img src="../assets/projects/distributed-training/tensor-parallelism.png" alt="Tensor parallelism"></p>
+<p>Pipeline parallelism partitions model layers across devices and uses microbatches to keep pipeline stages busy.</p>
+<p><img src="../assets/projects/distributed-training/pipeline-model-parallelism.png" alt="Pipeline model parallelism"></p>
+<p><img src="../assets/projects/distributed-training/pipeline-1f1b.png" alt="Pipeline 1F1B schedule"></p>
+<p>The project itself focuses on DDP/FSDP and activation checkpointing, but the theory notes place those techniques in the broader DP/TP/PP design space.</p>
+<p><img src="../assets/projects/distributed-training/parallelism-summary.png" alt="Parallelism summary"></p>
+<p><img src="../assets/projects/distributed-training/transformer-parallel-results.png" alt="Transformer parallel scaling example"></p>
+<p>The scaling figure illustrates why real large-language-model training often combines forms of parallelism. Data parallelism helps throughput when each GPU can store a full model replica, but model, tensor, and pipeline parallelism become important once model state or layer computation no longer fits comfortably on one device.</p>
+<h2>Implementation Details</h2>
+<p>The training scripts support:</p>
+<ul>
+<li><code>torchrun</code> multi-process launch.</li>
+<li>NCCL distributed backend.</li>
+<li>DDP or FSDP strategy selection via <code>--strategy</code>.</li>
+<li>GPT-Neo-1.3B loading through Hugging Face Transformers.</li>
+<li>Wikitext or synthetic token stream dataset.</li>
+<li>Sequence length control with <code>--seq_len</code>.</li>
+<li>Per-GPU microbatch control with <code>--microbatch</code>.</li>
+<li>Gradient accumulation with <code>--grad_accum</code>.</li>
+<li>FP16 mixed precision with <code>--fp16</code>.</li>
+<li>Activation checkpointing with <code>--checkpoint</code>.</li>
+<li>Loss logging, step time, tokens/sec, and max GPU memory reporting.</li>
+</ul>
+<p>FSDP setup uses:</p>
+<ul>
+<li><code>FullyShardedDataParallel</code>.</li>
+<li><code>ShardingStrategy.FULL_SHARD</code>.</li>
+<li>Transformer block auto-wrapping for GPT-Neo blocks.</li>
+<li><code>MixedPrecision</code> with FP16 parameter, reduce, and buffer dtypes.</li>
+</ul>
+<h2>Microbatch, Gradient Accumulation, and Global Batch</h2>
+<p>The most important experimental knobs are:</p>
+<pre><code class="language-text">--microbatch
+--grad_accum
+</code></pre>
+<p><code>microbatch</code> controls how many sequences each GPU processes in one forward/backward pass. <code>grad_accum</code> controls how many microbatches are accumulated before one optimizer update.</p>
+<p>The effective global batch size is:</p>
+<pre><code class="language-text">global_batch = microbatch * world_size * grad_accum
+</code></pre>
+<p>For example, the DDP checkpoint experiment uses:</p>
+<pre><code class="language-text">world_size = 4
+microbatch = 2
+grad_accum = 8
+
+global_batch = 4 * 2 * 8 = 64
+</code></pre>
+<p>The FSDP experiment uses:</p>
+<pre><code class="language-text">world_size = 4
+microbatch = 4
+grad_accum = 4
+
+global_batch = 4 * 4 * 4 = 64
+</code></pre>
+<p>This design keeps the effective global batch roughly fixed while changing the memory and performance profile of each optimizer step.</p>
+<p>For <code>microbatch = 2</code> and <code>grad_accum = 8</code>, one logical optimizer step looks like:</p>
+<pre><code class="language-text">microbatch 1: forward + backward + accumulate gradients
+microbatch 2: forward + backward + accumulate gradients
+...
+microbatch 8: forward + backward + synchronize gradients
+
+gradient clipping
+optimizer.step()
+optimizer.zero_grad()
+</code></pre>
+<p>The training loop divides each microbatch loss by the number of accumulation steps:</p>
+<pre><code class="language-python">loss = loss / cfg.grad_accum
+</code></pre>
+<p>This makes the accumulated gradient equivalent to averaging over the effective batch rather than summing gradients whose scale grows with <code>grad_accum</code>.</p>
+<p>Why fix global batch size?</p>
+<p>If we compare <code>microbatch=1, accum=1</code> against <code>microbatch=8, accum=1</code>, the optimizer step processes different amounts of data. Step time, throughput, loss scale, memory pressure, and optimization behavior are all mixed together. Fixing <code>microbatch * grad_accum</code> makes the comparison more meaningful:</p>
+<pre><code class="language-text">For the same effective batch, is it better to use a larger microbatch
+with fewer accumulation steps, or a smaller microbatch with more accumulation?
+</code></pre>
+<h2>DDP no_sync Optimization</h2>
+<p>The DDP training loop uses an important optimization during gradient accumulation:</p>
+<pre><code class="language-python">use_no_sync = (
+    cfg.strategy == &quot;ddp&quot;
+    and hasattr(model, &quot;no_sync&quot;)
+    and i &lt; cfg.grad_accum - 1
+)
+</code></pre>
+<p>For the first <code>grad_accum - 1</code> microbatches, DDP enters <code>model.no_sync()</code> and accumulates gradients locally. Only the final microbatch triggers gradient synchronization.</p>
+<p>Without <code>no_sync()</code>:</p>
+<pre><code class="language-text">microbatch 1 -&gt; backward + AllReduce
+microbatch 2 -&gt; backward + AllReduce
+...
+microbatch 8 -&gt; backward + AllReduce
+</code></pre>
+<p>With <code>no_sync()</code>:</p>
+<pre><code class="language-text">microbatch 1 -&gt; local gradient accumulation
+microbatch 2 -&gt; local gradient accumulation
+...
+microbatch 8 -&gt; backward + one AllReduce
+</code></pre>
+<p>This does not change the intended mathematical update because the optimizer step happens only after all accumulation microbatches. It avoids unnecessary communication and is essential for making gradient accumulation efficient under DDP.</p>
+<h2>Experiment Matrix</h2>
+<p>The repo includes sweep scripts for the following experiment dimensions.</p>
+<table>
+<thead>
+<tr>
+<th>Experiment</th>
+<th>Strategy</th>
+<th>Dataset</th>
+<th align="right">Seq len</th>
+<th align="right">Microbatch</th>
+<th align="right">Grad accumulation</th>
+<th>Checkpointing</th>
+<th align="right">GPUs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DDP Wikitext run</td>
+<td>DDP</td>
+<td>Wikitext</td>
+<td align="right">1024</td>
+<td align="right">2</td>
+<td align="right">8</td>
+<td>Off</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>DDP checkpoint off</td>
+<td>DDP</td>
+<td>Wikitext</td>
+<td align="right">1024</td>
+<td align="right">2</td>
+<td align="right">8</td>
+<td>Off</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>DDP checkpoint on</td>
+<td>DDP</td>
+<td>Wikitext</td>
+<td align="right">1024</td>
+<td align="right">2</td>
+<td align="right">8</td>
+<td>On</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>FSDP checkpoint off</td>
+<td>FSDP</td>
+<td>Wikitext</td>
+<td align="right">1024</td>
+<td align="right">4</td>
+<td align="right">4</td>
+<td>Off</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>FSDP checkpoint on</td>
+<td>FSDP</td>
+<td>Wikitext</td>
+<td align="right">1024</td>
+<td align="right">4</td>
+<td align="right">4</td>
+<td>On</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>Sweep</td>
+<td>DDP/FSDP</td>
+<td>Synthetic</td>
+<td align="right">1024</td>
+<td align="right">1, 2, 4, 8</td>
+<td align="right">16, 8, 4, 2</td>
+<td>On/Off</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td>Sweep</td>
+<td>DDP</td>
+<td>Wikitext</td>
+<td align="right">512, 1024</td>
+<td align="right">1, 2, 4, 8</td>
+<td align="right">8, 4, 2, 1</td>
+<td>Off</td>
+<td align="right">8</td>
+</tr>
+</tbody></table>
+<p>The effective tokens per optimizer step are computed as:</p>
+<pre><code class="language-text">microbatch * seq_len * world_size * grad_accum
+</code></pre>
+<p>This makes microbatch and gradient accumulation directly comparable: different settings can keep similar effective batch size while changing memory pressure and communication cadence.</p>
+<h2>Observable Metrics</h2>
+<p>The scripts are designed to log:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Loss</td>
+<td>Training sanity check.</td>
+</tr>
+<tr>
+<td>Average step time</td>
+<td>Measures throughput bottlenecks.</td>
+</tr>
+<tr>
+<td>Tokens/sec</td>
+<td>Normalized training throughput.</td>
+</tr>
+<tr>
+<td>Max allocated GPU memory</td>
+<td>Peak memory pressure.</td>
+</tr>
+<tr>
+<td>Max reserved GPU memory</td>
+<td>CUDA caching allocator footprint.</td>
+</tr>
+<tr>
+<td>Rank-averaged metrics</td>
+<td>Comparable reporting across distributed workers.</td>
+</tr>
+</tbody></table>
+<p>Loss is averaged over the accumulation cycle and then reduced across ranks. Its purpose is to validate that forward/backward is numerically sane, DDP and FSDP are in the same range, and no NaN/Inf instability occurs. The project does not optimize for final perplexity or long-run convergence.</p>
+<p>Step time measures one logical optimizer step, including:</p>
+<pre><code class="language-text">grad_accum forward passes
+grad_accum backward passes
+gradient communication
+gradient clipping
+optimizer update
+</code></pre>
+<p>Warmup steps are excluded because early iterations can include CUDA context initialization, kernel loading, memory allocation, NCCL communicator setup, and cache warming.</p>
+<p>Tokens/sec is computed from:</p>
+<pre><code class="language-text">tokens_per_step = microbatch * seq_len * world_size * grad_accum
+tokens_per_second = tokens_per_step / average_step_time
+</code></pre>
+<p>For example:</p>
+<pre><code class="language-text">microbatch = 2
+seq_len = 1024
+world_size = 4
+grad_accum = 8
+
+tokens_per_step = 2 * 1024 * 4 * 8 = 65,536 tokens
+</code></pre>
+<p>If average step time is 4 seconds:</p>
+<pre><code class="language-text">tokens/sec = 65,536 / 4 = 16,384
+</code></pre>
+<p>GPU memory is reported with both:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>max_memory_allocated()</code></td>
+<td>Peak memory actually occupied by PyTorch tensors.</td>
+</tr>
+<tr>
+<td><code>max_memory_reserved()</code></td>
+<td>Peak memory reserved by the PyTorch caching allocator.</td>
+</tr>
+</tbody></table>
+<p><code>reserved</code> is usually greater than or equal to <code>allocated</code>, so reporting both gives a clearer view of tensor memory and allocator footprint.</p>
+<p>The public repo contains the training scripts and sweep configuration, but it does not include saved log files or result plots. Because of that, this page reports the implemented experiment matrix and the metrics the scripts record, rather than inventing exact throughput numbers.</p>
+<h2>Activation Checkpointing</h2>
+<p>Activation checkpointing trades compute for memory. Instead of saving all intermediate activations during forward, checkpointing saves fewer tensors and recomputes activations during backward.</p>
+<p>In the repo, checkpointing is enabled with:</p>
+<pre><code class="language-text">--checkpoint
+</code></pre>
+<p>and implemented through:</p>
+<pre><code class="language-python">model.gradient_checkpointing_enable()
+</code></pre>
+<p>Expected trade-off:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Memory</th>
+<th>Compute time</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Checkpoint off</td>
+<td>Higher activation memory</td>
+<td>Faster backward</td>
+<td>Activations are stored from forward.</td>
+</tr>
+<tr>
+<td>Checkpoint on</td>
+<td>Lower activation memory</td>
+<td>Slower backward</td>
+<td>Activations are recomputed during backward.</td>
+</tr>
+</tbody></table>
+<p>Checkpointing is useful when the limiting factor is peak memory and a larger microbatch or longer sequence length would otherwise not fit.</p>
+<h2>Expected Performance Patterns</h2>
+<p>The project is designed to reveal several predictable but hardware-dependent patterns.</p>
+<h3>Microbatch and Throughput</h3>
+<p>At fixed global batch:</p>
+<table>
+<thead>
+<tr>
+<th>Configuration</th>
+<th>Expected behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Smaller microbatch, larger accumulation</td>
+<td>Lower peak activation memory, but more forward/backward loops per optimizer step.</td>
+</tr>
+<tr>
+<td>Larger microbatch, smaller accumulation</td>
+<td>Higher activation memory, but often better GPU utilization and higher tokens/sec if it fits.</td>
+</tr>
+</tbody></table>
+<p>For example:</p>
+<table>
+<thead>
+<tr>
+<th align="right">Microbatch</th>
+<th align="right">Grad accumulation</th>
+<th align="right">Per-GPU effective batch</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1</td>
+<td align="right">16</td>
+<td align="right">16</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">8</td>
+<td align="right">16</td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td align="right">4</td>
+<td align="right">16</td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td align="right">2</td>
+<td align="right">16</td>
+</tr>
+</tbody></table>
+<p>The expected trend is that larger microbatch improves throughput until memory, cache pressure, or kernel saturation becomes the limiting factor. It is not infinitely linear:</p>
+<pre><code class="language-text">tokens/s
+   ^
+   |            ______
+   |         __/
+   |      __/
+   |_____/
+   +------------------&gt; microbatch
+</code></pre>
+<p>Activation memory mainly depends on microbatch size, sequence length, hidden size, number of layers, and checkpointing. Gradient accumulation does not keep all microbatch activations alive at once; each microbatch runs forward/backward and releases its activations before the next microbatch.</p>
+<h3>Checkpointing Trade-Off</h3>
+<p>Checkpointing is expected to reduce peak activation memory but increase step time:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Peak memory</th>
+<th>Step time</th>
+<th>Tokens/sec</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Checkpoint off</td>
+<td>Higher</td>
+<td>Lower</td>
+<td>Higher</td>
+</tr>
+<tr>
+<td>Checkpoint on</td>
+<td>Lower</td>
+<td>Higher</td>
+<td>Lower</td>
+</tr>
+</tbody></table>
+<p>However, checkpointing can make an otherwise impossible configuration fit. For example, <code>checkpoint off + microbatch=8</code> may OOM, while <code>checkpoint on + microbatch=8</code> may run. In that case, checkpointing may still be useful even if it is slower at the same microbatch size.</p>
+<h3>DDP vs FSDP</h3>
+<p>FSDP should reduce model-state memory relative to DDP because parameters, gradients, and optimizer states are sharded. But peak memory is not simply DDP memory divided by the GPU count. The run still needs activation memory, temporary AllGather buffers, communication buffers, CUDA context memory, allocator reserve, and temporary full parameters.</p>
+<p>FSDP also is not automatically faster than DDP:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>DDP</th>
+<th>FSDP <code>FULL_SHARD</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Memory</td>
+<td>Higher</td>
+<td>Lower</td>
+</tr>
+<tr>
+<td>Implementation complexity</td>
+<td>Lower</td>
+<td>Higher</td>
+</tr>
+<tr>
+<td>Communication pattern</td>
+<td>Gradient AllReduce</td>
+<td>Parameter AllGather + gradient ReduceScatter</td>
+</tr>
+<tr>
+<td>Small-scale throughput</td>
+<td>Often better</td>
+<td>Can be worse</td>
+</tr>
+<tr>
+<td>Maximum trainable model size</td>
+<td>Smaller</td>
+<td>Larger</td>
+</tr>
+</tbody></table>
+<p>On small GPU counts, PCIe interconnects, or small microbatches, DDP can have higher tokens/sec because FSDP communication is harder to hide behind computation. FSDP&#39;s primary value is memory scalability, not guaranteed single-step speedup.</p>
+<h3>Likely Ranking</h3>
+<p>If all configurations fit, a rough expected throughput order is:</p>
+<pre><code class="language-text">DDP, checkpoint off, large microbatch
+        ↓ fastest
+DDP, checkpoint off, small microbatch
+DDP, checkpoint on
+FSDP, checkpoint off
+FSDP, checkpoint on, small microbatch
+        ↓ possibly slowest
+</code></pre>
+<p>The memory ranking is usually:</p>
+<pre><code class="language-text">FSDP + checkpoint on
+        ↓ lowest
+FSDP + checkpoint off
+DDP + checkpoint on
+DDP + checkpoint off
+        ↓ highest
+</code></pre>
+<p>These are expectations, not universal laws. Hardware interconnect, GPU memory size, sequence length, model size, wrapping granularity, and microbatch size can change the exact order.</p>
+<h2>Main Takeaways</h2>
+<ul>
+<li>DDP is simple and efficient when the full model fits on each GPU.</li>
+<li>ZeRO/FSDP reduce memory redundancy by sharding optimizer states, gradients, and parameters.</li>
+<li>FSDP full-shard requires AllGather before computation and ReduceScatter after gradient computation.</li>
+<li>Activation checkpointing reduces peak activation memory but adds recomputation overhead.</li>
+<li>Microbatch size and gradient accumulation trade memory pressure against optimizer-step frequency.</li>
+<li>DDP <code>no_sync()</code> avoids unnecessary AllReduce during intermediate gradient-accumulation microbatches.</li>
+<li>Synthetic data is useful for isolating model compute, GPU memory, and distributed communication from data-pipeline overhead.</li>
+<li>Distributed training optimization is a balance between memory, communication, compute, and stability.</li>
+</ul>
+<h2>Experiment Result Analysis</h2>
+<p>The main value of this project is the implementation and experiment design for training GPT-Neo-1.3B under constrained memory. The scripts make the key distributed-training trade-offs explicit: DDP keeps full replicas and relies on gradient synchronization, while FSDP shards parameters and gradients to reduce per-GPU memory.</p>
+<p>FSDP should help most when model-state memory is the bottleneck. It can allow larger models or larger microbatches to fit, but it introduces extra AllGather and ReduceScatter communication. That means FSDP is not automatically faster than DDP; it is a memory-saving strategy that must be evaluated together with communication overhead.</p>
+<p>Activation checkpointing targets a different memory component: activations. It is especially useful for long sequence lengths such as 1024, where transformer activations become expensive. The cost is extra recomputation in backward, so the best checkpointing setting depends on whether the run is memory-bound or compute-bound.</p>
+<p>The microbatch and gradient-accumulation sweep is the center of the benchmark. By keeping the effective global batch fixed, the experiment can separate training-system effects from workload-size changes. Larger microbatch values usually improve GPU utilization and reduce repeated loop overhead, but they also increase activation memory and may OOM. Smaller microbatches are safer for memory but require more accumulation steps per optimizer update.</p>
+<p>The checkpointing comparison answers a different question: how much activation memory can be traded for recomputation? It is expected to reduce peak memory and reduce tokens/sec at the same microbatch size, but it may enable a larger microbatch or longer sequence length that would otherwise fail.</p>
+<p>The DDP <code>no_sync()</code> path is also important. Without it, gradient accumulation would trigger redundant AllReduce operations after every microbatch. Synchronizing only on the final accumulation step keeps the mathematical update the same while reducing communication.</p>
+<p>Overall, the benchmark is framed around six systems questions:</p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>What the project measures</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DDP vs FSDP memory</td>
+<td>Whether sharding parameters, gradients, and optimizer states meaningfully reduces per-GPU memory.</td>
+</tr>
+<tr>
+<td>FSDP communication cost</td>
+<td>Whether memory savings compensate for AllGather and ReduceScatter overhead.</td>
+</tr>
+<tr>
+<td>Microbatch vs accumulation</td>
+<td>Which fixed-global-batch configuration gives the best tokens/sec without OOM.</td>
+</tr>
+<tr>
+<td>Checkpointing</td>
+<td>How much activation memory is saved and how much recomputation is added.</td>
+</tr>
+<tr>
+<td>Sequence length</td>
+<td>How the bottleneck changes from shorter to longer contexts, where attention and activations grow quickly.</td>
+</tr>
+<tr>
+<td>DDP <code>no_sync()</code></td>
+<td>Whether communication is avoided during intermediate accumulation steps.</td>
+</tr>
+</tbody></table>
+<p>That is the right framing for large-model training systems: peak memory, communication, compute utilization, and throughput have to be optimized together rather than one at a time.</p>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>

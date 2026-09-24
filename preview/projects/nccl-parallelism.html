@@ -1,0 +1,1329 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>NCCL Parallelism and Communication Benchmarking</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>NCCL Parallelism and Communication Benchmarking</h1>
+<p>Built a hands-on distributed systems benchmarking project to study how NCCL collectives, data parallelism, tensor parallelism, and pipeline parallelism shape the communication cost of large-model training.</p>
+<ul>
+<li>Source code: <a href="https://github.com/licheng2018/NCCL">github</a></li>
+</ul>
+<h2>Contents</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Jump to sections</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Overview</td>
+<td><a href="#project-scope">Project Scope</a> · <a href="#project-positioning">Project Positioning</a> · <a href="#repository-structure">Repository Structure</a> · <a href="#learning-path">Learning Path</a></td>
+</tr>
+<tr>
+<td>NCCL Collectives</td>
+<td><a href="#parallelism-background">Parallelism Background</a> · <a href="#allreduce-semantics">AllReduce Semantics</a> · <a href="#allreduce-algorithm-visual-walkthrough">AllReduce Algorithm Visual Walkthrough</a> · <a href="#nccl-benchmark-setup">NCCL Benchmark Setup</a> · <a href="#message-size-and-communication-regimes">Message Size and Communication Regimes</a> · <a href="#algorithm-bandwidth-and-bus-bandwidth">Algorithm Bandwidth and Bus Bandwidth</a></td>
+</tr>
+<tr>
+<td>Results</td>
+<td><a href="#allreduce-scaling-result">AllReduce Scaling Result</a> · <a href="#collective-comparison">Collective Comparison</a> · <a href="#reducescatter-allgather-vs-allreduce">ReduceScatter + AllGather vs AllReduce</a></td>
+</tr>
+<tr>
+<td>Model Parallelism</td>
+<td><a href="#connection-to-ddp-fsdp-and-zero">Connection to DDP, FSDP, and ZeRO</a> · <a href="#tensor-parallel-experiment">Tensor Parallel Experiment</a> · <a href="#pipeline-parallel-experiment">Pipeline Parallel Experiment</a> · <a href="#combining-dp-tp-pp-and-fsdp">Combining DP, TP, PP, and FSDP</a></td>
+</tr>
+<tr>
+<td>Review</td>
+<td><a href="#main-conclusions">Main Conclusions</a> · <a href="#result-analysis">Result Analysis</a></td>
+</tr>
+</tbody></table>
+<h2>Project Scope</h2>
+<p><img src="../assets/projects/nccl-parallelism/nccl-collective-communication-overview.png" alt="NCCL collective communication overview for AllReduce, AllGather, ReduceScatter, and Broadcast"></p>
+<p><img src="../assets/projects/nccl-parallelism/gradient-bucketing-communication-computation-overlap.png" alt="Gradient bucketing and communication-computation overlap"></p>
+<p><img src="../assets/projects/nccl-parallelism/nccl-ring-allreduce-reducescatter-allgather.png" alt="NCCL Ring AllReduce as ReduceScatter plus AllGather"></p>
+<p><img src="../assets/projects/nccl-parallelism/nccl-allreduce-performance-vs-message-size.png" alt="NCCL AllReduce performance versus message size on 2x NVIDIA T4"></p>
+<p><img src="../assets/projects/nccl-parallelism/nccl-allgather-performance-vs-message-size.png" alt="NCCL AllGather performance versus message size on 2x NVIDIA T4"></p>
+<p><img src="../assets/projects/nccl-parallelism/nccl-reducescatter-performance-vs-message-size.png" alt="NCCL ReduceScatter performance versus message size on 2x NVIDIA T4"></p>
+<p><img src="../assets/projects/nccl-parallelism/nccl-collective-performance-allreduce-vs-rs-ag.png" alt="NCCL collective performance comparison: AllReduce versus ReduceScatter plus AllGather"></p>
+<p><img src="../assets/projects/nccl-parallelism/tensor-parallel-column-row-communication.png" alt="Tensor parallelism column-parallel versus row-parallel communication"></p>
+<p><img src="../assets/projects/nccl-parallelism/pipeline-parallelism-microbatches-bubble-stage-utilization.png" alt="Pipeline parallelism microbatches, bubble, and stage utilization"></p>
+<ul>
+<li>Benchmarked NCCL <code>AllReduce</code>, <code>ReduceScatter</code>, and <code>AllGather</code> on a 2-GPU Tesla T4 setup using <code>nccl-tests</code>.</li>
+<li>Measured latency and bus bandwidth across message sizes from bytes-scale transfers to hundreds of MB.</li>
+<li>Compared full-gradient synchronization with sharded communication patterns used by ZeRO/FSDP-style training.</li>
+<li>Implemented toy tensor-parallel and pipeline-parallel training examples to connect collective primitives with model-parallel execution.</li>
+<li>Analyzed when communication is latency-bound, when it becomes bandwidth-bound, and when sharded collectives are useful despite extra orchestration overhead.</li>
+</ul>
+<h2>Project Positioning</h2>
+<p>This repository is more than a simple NCCL bandwidth test. It is a multi-GPU communication and model-parallel learning project built on a <code>2 x Tesla T4</code> environment. The goal is to connect low-level collective behavior with the distributed training strategies used in larger systems.</p>
+<p>The project answers four related questions:</p>
+<table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Experiment</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>How does collective performance change with message size?</td>
+<td><code>all_reduce_perf</code> scans from tiny messages to hundreds of MB.</td>
+</tr>
+<tr>
+<td>How do <code>AllReduce</code>, <code>ReduceScatter</code>, and <code>AllGather</code> differ?</td>
+<td>Collective comparison notebook benchmarks all three primitives.</td>
+</tr>
+<tr>
+<td>How does tensor parallelism use collectives inside a layer?</td>
+<td>Megatron-style toy MLP with column-parallel and row-parallel linear layers.</td>
+</tr>
+<tr>
+<td>How does pipeline parallelism move work across stages?</td>
+<td>Two-stage toy model with no-microbatch and microbatch execution.</td>
+</tr>
+</tbody></table>
+<p>This project also forms a lower-level companion to the GPT training project:</p>
+<pre><code class="language-text">gpt_training
+├── DDP
+├── FSDP
+├── gradient accumulation
+└── end-to-end training performance
+
+NCCL
+├── AllReduce
+├── ReduceScatter
+├── AllGather
+├── tensor parallel communication
+└── pipeline activation movement
+</code></pre>
+<h2>Repository Structure</h2>
+<table>
+<thead>
+<tr>
+<th>Notebook</th>
+<th>Main purpose</th>
+<th>Key output</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>nccl-experiments.ipynb</code></td>
+<td>Run NCCL <code>all_reduce_perf</code> across message sizes</td>
+<td>AllReduce latency/bandwidth curve and saturation behavior</td>
+</tr>
+<tr>
+<td><code>reducescatter-allgather.ipynb</code></td>
+<td>Compare <code>AllReduce</code>, <code>ReduceScatter</code>, and <code>AllGather</code></td>
+<td>Collective-level latency, bandwidth, and RS+AG vs AllReduce ratio</td>
+</tr>
+<tr>
+<td><code>tensor-parallel-megatron.ipynb</code></td>
+<td>Build a Megatron-style toy tensor-parallel MLP block</td>
+<td>Correctness check against a reference dense block</td>
+</tr>
+<tr>
+<td><code>pipeline-parallel.ipynb</code></td>
+<td>Build a two-stage pipeline-parallel toy training loop</td>
+<td>No-microbatch vs microbatch scheduling behavior</td>
+</tr>
+</tbody></table>
+<h2>Learning Path</h2>
+<p>The four notebooks form a progression from raw communication measurements to model-parallel execution:</p>
+<p><img src="../assets/projects/nccl-parallelism/nccl-learning-path.svg" alt="NCCL learning path"></p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>What is learned</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. Communication performance</td>
+<td>Latency-bound vs bandwidth-bound collective behavior.</td>
+<td>Explains why many tiny collectives are inefficient.</td>
+</tr>
+<tr>
+<td>2. Collective primitives</td>
+<td><code>AllReduce</code>, <code>ReduceScatter</code>, and <code>AllGather</code>.</td>
+<td>Connects DDP gradient sync with FSDP/ZeRO sharding.</td>
+</tr>
+<tr>
+<td>3. Tensor parallelism</td>
+<td>Column-parallel and row-parallel layers.</td>
+<td>Shows where collectives appear inside Transformer layers.</td>
+</tr>
+<tr>
+<td>4. Pipeline parallelism</td>
+<td>Layer-stage split and microbatch scheduling.</td>
+<td>Shows how pipeline bubbles arise and why microbatches matter.</td>
+</tr>
+</tbody></table>
+<h2>Parallelism Background</h2>
+<p><img src="../assets/projects/nccl-parallelism/data-parallelism.png" alt="Data parallel gradient aggregation"></p>
+<p>Data parallel training replicates the model across GPUs, partitions mini-batches, computes local gradients, and then synchronizes gradients across devices. This makes the collective communication pattern a core part of training performance.</p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-methods.png" alt="AllReduce methods"></p>
+<p>The project uses NCCL collectives to compare communication schemes that appear in distributed training systems:</p>
+<table>
+<thead>
+<tr>
+<th>Collective</th>
+<th>Input on each GPU</th>
+<th>Output on each GPU</th>
+<th>Training intuition</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>AllReduce</code></td>
+<td>Full tensor</td>
+<td>Full reduced tensor</td>
+<td>DDP-style full gradient synchronization</td>
+</tr>
+<tr>
+<td><code>ReduceScatter</code></td>
+<td>Full tensor</td>
+<td>One reduced shard</td>
+<td>FSDP/ZeRO-style sharded gradient aggregation</td>
+</tr>
+<tr>
+<td><code>AllGather</code></td>
+<td>One shard</td>
+<td>Reconstructed full tensor</td>
+<td>FSDP/ZeRO-style temporary parameter reconstruction</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/nccl-parallelism/collectives-overview.png" alt="ReduceScatter and AllGather in FSDP"></p>
+<h2>AllReduce Semantics</h2>
+<p><code>AllReduce</code> combines values across all ranks and returns the reduced result to every rank.</p>
+<p>For example, with two GPUs:</p>
+<pre><code class="language-text">GPU 0: [1, 2, 3, 4]
+GPU 1: [10, 20, 30, 40]
+</code></pre>
+<p>After:</p>
+<pre><code class="language-text">dist.all_reduce(tensor, op=SUM)
+</code></pre>
+<p>both GPUs hold:</p>
+<pre><code class="language-text">GPU 0: [11, 22, 33, 44]
+GPU 1: [11, 22, 33, 44]
+</code></pre>
+<p>Logically, this contains two actions:</p>
+<pre><code class="language-text">Reduce:    combine data across GPUs
+Broadcast: make the result available on every GPU
+</code></pre>
+<p>In DDP, this corresponds to gradient synchronization:</p>
+<pre><code class="language-text">GPU 0 calculates local gradients
+GPU 1 calculates local gradients
+            ↓
+        AllReduce
+            ↓
+both GPUs obtain synchronized gradients
+</code></pre>
+<p>This is why the NCCL project directly supports the distributed-training project: DDP&#39;s high-level gradient sync is implemented using collective communication.</p>
+<h2>AllReduce Algorithm Visual Walkthrough</h2>
+<p>The slide deck explains why different AllReduce algorithms have different latency and bandwidth behavior. These diagrams are useful for interpreting the NCCL measurements: the same mathematical collective can be implemented with different communication schedules.</p>
+<h3>Naive AllReduce</h3>
+<p>Naive AllReduce sends local gradients from each worker to all other workers. If there are <code>N</code> workers and each model has <code>M</code> parameters, the communication can grow poorly because every worker communicates full parameter-size data with many peers.</p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/naive-allreduce.png" alt="Naive AllReduce"></p>
+<p>The main issue is scalability. It is conceptually simple, but the traffic pattern becomes expensive as the number of workers increases.</p>
+<h3>Ring AllReduce</h3>
+<p>Ring AllReduce arranges workers in a ring and divides the parameter vector into <code>N</code> slices. It has two phases:</p>
+<pre><code class="language-text">1. Aggregation / reduce-scatter-style phase
+2. Broadcast / all-gather-style phase
+</code></pre>
+<p>In the aggregation phase, each worker sends one slice to the next worker in the ring and receives one slice from the previous worker. After repeating this process, each worker owns one fully aggregated slice.</p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-setup.png" alt="Ring AllReduce setup"></p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-step1-a.png" alt="Ring AllReduce step 1A"></p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-step1-b.png" alt="Ring AllReduce step 1B"></p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-step1-complete.png" alt="Ring AllReduce aggregation complete"></p>
+<p>In the broadcast phase, the aggregated slices circulate so every worker reconstructs the full reduced tensor.</p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-step2-a.png" alt="Ring AllReduce step 2A"></p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-step2-b.png" alt="Ring AllReduce step 2B"></p>
+<p>The slide summary states the overall communication as:</p>
+<pre><code class="language-text">Aggregation: N * M parameters
+Broadcast:   N * M parameters
+Total:       2 * N * M parameters
+</code></pre>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/ring-allreduce-summary.png" alt="Ring AllReduce summary"></p>
+<p>This is why ring algorithms are strong for large messages: they are bandwidth-efficient and use a regular communication pattern, though they require multiple phases around the ring.</p>
+<h3>Tree AllReduce</h3>
+<p>Tree AllReduce organizes workers into a tree. The aggregation phase sends data upward to parent nodes, and the broadcast phase sends the reduced result back downward to children.</p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/tree-allreduce-steps.png" alt="Tree AllReduce steps"></p>
+<p>The total communication volume is summarized as:</p>
+<pre><code class="language-text">Aggregation: N * M parameters
+Broadcast:   N * M parameters
+Total:       2 * N * M parameters
+</code></pre>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/tree-allreduce-summary.png" alt="Tree AllReduce summary"></p>
+<p>Tree methods can reduce the number of startup phases compared with ring-style communication, which can be attractive for smaller messages or specific network topologies.</p>
+<h3>Butterfly AllReduce</h3>
+<p>Butterfly communication repeatedly pairs workers so each step exchanges and aggregates partial results with a different partner. After <code>log(N)</code> rounds, all workers can obtain the full reduction.</p>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/butterfly-network.png" alt="Butterfly network"></p>
+<p>The slide summary emphasizes:</p>
+<pre><code class="language-text">repeat log(N) times:
+    each worker sends parameters to its butterfly target
+    each worker aggregates gradients locally
+
+overall communication: N * M * log(N) parameters
+</code></pre>
+<p><img src="../assets/projects/nccl-parallelism/allreduce-slides/butterfly-allreduce.png" alt="Butterfly AllReduce"></p>
+<p>The takeaway is that AllReduce performance depends on both message size and algorithmic schedule. Ring is often bandwidth-efficient for large payloads, while tree or butterfly-style approaches can have different latency and phase trade-offs.</p>
+<h2>NCCL Benchmark Setup</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Configuration</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU setup</td>
+<td>2 x Tesla T4, 15 GB each</td>
+</tr>
+<tr>
+<td>Runtime environment</td>
+<td>Kaggle GPU runtime</td>
+</tr>
+<tr>
+<td>PyTorch / CUDA</td>
+<td>PyTorch 2.10, CUDA 12.8</td>
+</tr>
+<tr>
+<td>NCCL test version</td>
+<td><code>nccl-tests</code> 2.18.2</td>
+</tr>
+<tr>
+<td>Main benchmark</td>
+<td><code>all_reduce_perf</code>, <code>reduce_scatter_perf</code>, <code>all_gather_perf</code></td>
+</tr>
+<tr>
+<td>Data type / op</td>
+<td><code>float</code>, <code>sum</code></td>
+</tr>
+<tr>
+<td>Message range</td>
+<td>8 B to 512 MB for AllReduce scan; 1 MB to 256 MB for collective comparison</td>
+</tr>
+<tr>
+<td>Reported metrics</td>
+<td>Latency in microseconds, algorithm bandwidth, bus bandwidth, correctness errors</td>
+</tr>
+</tbody></table>
+<p>The first notebook verifies the two T4 GPUs using <code>nvidia-smi</code> and PyTorch, clones and compiles NVIDIA&#39;s official <code>nccl-tests</code>, then runs the main executable:</p>
+<pre><code class="language-text">all_reduce_perf
+</code></pre>
+<p>The core command is equivalent to:</p>
+<pre><code class="language-text">./all_reduce_perf \
+    -b 8 \
+    -e 256M \
+    -f 2 \
+    -g 2
+</code></pre>
+<p>Parameter meaning:</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>-b 8</code></td>
+<td>Minimum message size is 8 bytes.</td>
+</tr>
+<tr>
+<td><code>-e 256M</code></td>
+<td>Maximum message size is 256 MB.</td>
+</tr>
+<tr>
+<td><code>-f 2</code></td>
+<td>Message size doubles each step.</td>
+</tr>
+<tr>
+<td><code>-g 2</code></td>
+<td>Use two GPUs.</td>
+</tr>
+</tbody></table>
+<p>The goal is not to obtain a single bandwidth number. The goal is to observe how communication behavior changes as message size grows.</p>
+<h2>Message Size and Communication Regimes</h2>
+<p>Communication time can be approximated as:</p>
+<pre><code class="language-text">T_communication ~= alpha + N / B
+</code></pre>
+<p>where:</p>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>alpha</code></td>
+<td>Fixed latency and launch/protocol overhead.</td>
+</tr>
+<tr>
+<td><code>N</code></td>
+<td>Message size.</td>
+</tr>
+<tr>
+<td><code>B</code></td>
+<td>Effective communication bandwidth.</td>
+</tr>
+</tbody></table>
+<p>For small messages:</p>
+<pre><code class="language-text">N / B &lt;&lt; alpha
+</code></pre>
+<p>The fixed cost dominates. NCCL launch overhead, CUDA kernel launch, synchronization, protocol setup, and software-stack overhead are paid even if the payload is only a few bytes. This is why 8-byte to KB-scale messages can take tens of microseconds while reporting nearly zero effective bandwidth.</p>
+<p>For large messages:</p>
+<pre><code class="language-text">N / B &gt;&gt; alpha
+</code></pre>
+<p>The fixed overhead is amortized and communication becomes limited by PCIe bandwidth, peer-to-peer path, memory copy bandwidth, NCCL protocol choice, and topology.</p>
+<p>The notebook separates the scan into three ranges:</p>
+<table>
+<thead>
+<tr>
+<th>Scan</th>
+<th>Range</th>
+<th align="right">Factor</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Full scan</td>
+<td>8 B to 256 MB</td>
+<td align="right">2.0</td>
+<td>Shows the whole transition from latency-bound to bandwidth-bound.</td>
+</tr>
+<tr>
+<td>Mid-size scan</td>
+<td>1 KB to 16 MB</td>
+<td align="right">1.5</td>
+<td>Zooms into the transition region where bandwidth rises quickly.</td>
+</tr>
+<tr>
+<td>Large-message scan</td>
+<td>8 MB to 512 MB</td>
+<td align="right">2.0</td>
+<td>Confirms the saturated bandwidth plateau.</td>
+</tr>
+</tbody></table>
+<p>The logs are parsed into Pandas DataFrames containing message size, time, algorithm bandwidth, bus bandwidth, and correctness status.</p>
+<h2>Algorithm Bandwidth and Bus Bandwidth</h2>
+<p><code>nccl-tests</code> reports both <code>algbw</code> and <code>busbw</code>.</p>
+<p>Algorithm bandwidth describes the logical collective throughput from the application perspective:</p>
+<pre><code class="language-text">algbw ~= logical data size / operation time
+</code></pre>
+<p>Bus bandwidth applies collective-specific correction factors to estimate effective utilization of the underlying interconnect.</p>
+<p>For Ring AllReduce with <code>P</code> GPUs, the common bus-bandwidth correction is:</p>
+<pre><code class="language-text">busbw = algbw * P / [2 * (P - 1)]
+</code></pre>
+<p>For <code>P = 2</code>:</p>
+<pre><code class="language-text">P / [2 * (P - 1)] = 2 / [2 * 1] = 1
+</code></pre>
+<p>So in this 2-GPU AllReduce experiment:</p>
+<pre><code class="language-text">algbw ~= busbw
+</code></pre>
+<p>For <code>ReduceScatter</code> and <code>AllGather</code>, <code>algbw</code> and <code>busbw</code> differ more visibly because the logical output size and physical communication volume are defined differently. When comparing different collective types, <code>busbw</code> is usually the safer metric for interconnect utilization.</p>
+<h2>AllReduce Scaling Result</h2>
+<p>The AllReduce scan shows a clear transition from latency-bound execution at small message sizes to bandwidth-bound execution at large message sizes.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Message size</th>
+<th align="right">Time</th>
+<th align="right">Bus bandwidth</th>
+<th>Observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">8 B</td>
+<td align="right">14.46 us</td>
+<td align="right">0.00 GB/s</td>
+<td>Launch and synchronization overhead dominate</td>
+</tr>
+<tr>
+<td align="right">1 KB</td>
+<td align="right">14.34 us</td>
+<td align="right">0.07 GB/s</td>
+<td>Still latency-bound</td>
+</tr>
+<tr>
+<td align="right">64 KB</td>
+<td align="right">44.73 us</td>
+<td align="right">1.47 GB/s</td>
+<td>Bandwidth begins to matter</td>
+</tr>
+<tr>
+<td align="right">1 MB</td>
+<td align="right">293.66 us</td>
+<td align="right">3.57 GB/s</td>
+<td>Collective approaches high utilization</td>
+</tr>
+<tr>
+<td align="right">8 MB</td>
+<td align="right">2,111.71 us</td>
+<td align="right">3.97 GB/s</td>
+<td>Near saturation</td>
+</tr>
+<tr>
+<td align="right">32 MB</td>
+<td align="right">8,377.52 us</td>
+<td align="right">4.01 GB/s</td>
+<td>Bandwidth-bound region</td>
+</tr>
+<tr>
+<td align="right">128 MB</td>
+<td align="right">33,408.50 us</td>
+<td align="right">4.02 GB/s</td>
+<td>Sustained bandwidth</td>
+</tr>
+<tr>
+<td align="right">512 MB</td>
+<td align="right">133,221.00 us</td>
+<td align="right">4.03 GB/s</td>
+<td>Saturated around 4 GB/s bus bandwidth</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/nccl-parallelism/collective-time-vs-size.svg" alt="NCCL collective latency by message size"></p>
+<h2>Collective Comparison</h2>
+<p>The second experiment compares AllReduce with its sharded building blocks. On two GPUs, <code>ReduceScatter</code> and <code>AllGather</code> each move less data than a full AllReduce and therefore have lower individual latency, but composing them sequentially adds extra overhead.</p>
+<p>The notebook runs three NCCL benchmarks:</p>
+<pre><code class="language-text">all_reduce_perf
+reduce_scatter_perf
+all_gather_perf
+</code></pre>
+<p>Configuration:</p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Setting</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Message range</td>
+<td>8 bytes to 256 MB</td>
+</tr>
+<tr>
+<td>GPUs</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Warmup iterations</td>
+<td>5</td>
+</tr>
+<tr>
+<td>Measured iterations</td>
+<td>20</td>
+</tr>
+</tbody></table>
+<p>This experiment is the part most directly connected to FSDP and ZeRO because sharded training uses <code>ReduceScatter</code> and <code>AllGather</code> separately instead of always exposing full <code>AllReduce</code>.</p>
+<h3>ReduceScatter Semantics</h3>
+<p>Assume each GPU starts with a full vector:</p>
+<pre><code class="language-text">GPU 0: [1, 2, 3, 4]
+GPU 1: [10, 20, 30, 40]
+</code></pre>
+<p>First, the values are reduced:</p>
+<pre><code class="language-text">[1, 2, 3, 4] + [10, 20, 30, 40]
+= [11, 22, 33, 44]
+</code></pre>
+<p>Then the reduced result is scattered:</p>
+<pre><code class="language-text">GPU 0 receives: [11, 22]
+GPU 1 receives: [33, 44]
+</code></pre>
+<p>So <code>ReduceScatter</code> leaves each GPU with only one shard of the reduced result. This is the communication pattern behind gradient sharding:</p>
+<pre><code class="language-text">each GPU calculates gradients
+        ↓
+ReduceScatter
+        ↓
+each GPU retains only its gradient shard
+</code></pre>
+<h3>AllGather Semantics</h3>
+<p>Assume each GPU starts with one shard:</p>
+<pre><code class="language-text">GPU 0: [11, 22]
+GPU 1: [33, 44]
+</code></pre>
+<p>After <code>AllGather</code>:</p>
+<pre><code class="language-text">GPU 0: [11, 22, 33, 44]
+GPU 1: [11, 22, 33, 44]
+</code></pre>
+<p>Each GPU contributes its shard, all GPUs exchange shards, and every GPU reconstructs the complete tensor.</p>
+<p>In FSDP forward, this corresponds to:</p>
+<pre><code class="language-text">parameter shards
+      ↓
+AllGather
+      ↓
+temporary full parameters
+      ↓
+layer computation
+</code></pre>
+<h3>AllReduce as ReduceScatter + AllGather</h3>
+<p>Logically:</p>
+<pre><code class="language-text">AllReduce = ReduceScatter + AllGather
+</code></pre>
+<p>Step 1:</p>
+<pre><code class="language-text">ReduceScatter:
+different GPUs reduce data
+each GPU retains one reduced shard
+</code></pre>
+<p>Step 2:</p>
+<pre><code class="language-text">AllGather:
+all GPUs exchange reduced shards
+each GPU reconstructs the full reduced tensor
+</code></pre>
+<p>The distinction is not just mathematical; it changes ownership. DDP usually needs the full synchronized gradient on every GPU, so <code>AllReduce</code> is the natural primitive. FSDP/ZeRO can keep gradients, parameters, and optimizer states sharded, so <code>ReduceScatter</code> and <code>AllGather</code> appear at different points in the training step.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Size</th>
+<th align="right">AllGather time</th>
+<th align="right">ReduceScatter time</th>
+<th align="right">AllReduce time</th>
+<th align="right">AllGather bus BW</th>
+<th align="right">ReduceScatter bus BW</th>
+<th align="right">AllReduce bus BW</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1 MB</td>
+<td align="right">186.94 us</td>
+<td align="right">187.11 us</td>
+<td align="right">297.03 us</td>
+<td align="right">2.80 GB/s</td>
+<td align="right">2.80 GB/s</td>
+<td align="right">3.53 GB/s</td>
+</tr>
+<tr>
+<td align="right">2 MB</td>
+<td align="right">345.46 us</td>
+<td align="right">341.86 us</td>
+<td align="right">556.66 us</td>
+<td align="right">3.04 GB/s</td>
+<td align="right">3.07 GB/s</td>
+<td align="right">3.77 GB/s</td>
+</tr>
+<tr>
+<td align="right">4 MB</td>
+<td align="right">680.58 us</td>
+<td align="right">671.56 us</td>
+<td align="right">1,088.25 us</td>
+<td align="right">3.08 GB/s</td>
+<td align="right">3.12 GB/s</td>
+<td align="right">3.85 GB/s</td>
+</tr>
+<tr>
+<td align="right">8 MB</td>
+<td align="right">1,334.26 us</td>
+<td align="right">1,328.48 us</td>
+<td align="right">2,121.56 us</td>
+<td align="right">3.14 GB/s</td>
+<td align="right">3.16 GB/s</td>
+<td align="right">3.95 GB/s</td>
+</tr>
+<tr>
+<td align="right">16 MB</td>
+<td align="right">2,634.97 us</td>
+<td align="right">2,639.63 us</td>
+<td align="right">4,231.72 us</td>
+<td align="right">3.18 GB/s</td>
+<td align="right">3.18 GB/s</td>
+<td align="right">3.96 GB/s</td>
+</tr>
+<tr>
+<td align="right">32 MB</td>
+<td align="right">5,232.37 us</td>
+<td align="right">5,191.20 us</td>
+<td align="right">8,432.17 us</td>
+<td align="right">3.21 GB/s</td>
+<td align="right">3.23 GB/s</td>
+<td align="right">3.98 GB/s</td>
+</tr>
+<tr>
+<td align="right">64 MB</td>
+<td align="right">10,369.70 us</td>
+<td align="right">10,269.40 us</td>
+<td align="right">16,839.90 us</td>
+<td align="right">3.24 GB/s</td>
+<td align="right">3.27 GB/s</td>
+<td align="right">3.99 GB/s</td>
+</tr>
+<tr>
+<td align="right">128 MB</td>
+<td align="right">20,714.80 us</td>
+<td align="right">19,925.50 us</td>
+<td align="right">33,668.50 us</td>
+<td align="right">3.24 GB/s</td>
+<td align="right">3.37 GB/s</td>
+<td align="right">3.99 GB/s</td>
+</tr>
+<tr>
+<td align="right">256 MB</td>
+<td align="right">40,918.20 us</td>
+<td align="right">36,571.90 us</td>
+<td align="right">67,290.60 us</td>
+<td align="right">3.28 GB/s</td>
+<td align="right">3.67 GB/s</td>
+<td align="right">3.99 GB/s</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/nccl-parallelism/collective-bandwidth-vs-size.svg" alt="NCCL collective bandwidth by message size"></p>
+<p>For large <code>ReduceScatter</code> messages, the experiment reports roughly:</p>
+<table>
+<thead>
+<tr>
+<th align="right">Message</th>
+<th align="right">Time</th>
+<th align="right">Algorithm bandwidth</th>
+<th align="right">Bus bandwidth</th>
+<th>Correctness</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">128 MB</td>
+<td align="right">about 20 ms</td>
+<td align="right">about 6.5 GB/s</td>
+<td align="right">about 3.2-3.4 GB/s</td>
+<td><code>#wrong = 0</code>, out-of-bounds OK</td>
+</tr>
+<tr>
+<td align="right">256 MB</td>
+<td align="right">about 37-41 ms</td>
+<td align="right">about 6.6-7.3 GB/s</td>
+<td align="right">about 3.3-3.7 GB/s</td>
+<td><code>#wrong = 0</code>, out-of-bounds OK</td>
+</tr>
+</tbody></table>
+<p>The higher <code>algbw</code> does not mean the physical link suddenly became faster than the AllReduce link. It reflects how the benchmark defines logical size for a collective whose output is sharded. For cross-collective comparison, <code>busbw</code> is the more meaningful interconnect-oriented number.</p>
+<h2>ReduceScatter + AllGather vs AllReduce</h2>
+<p>Mathematically, an AllReduce can be expressed as <code>ReduceScatter + AllGather</code>. The experiment validates this decomposition but also shows that directly composing the two primitives is slower than a fused NCCL AllReduce on this 2-GPU setup.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Size</th>
+<th align="right"><code>(ReduceScatter + AllGather) / AllReduce</code></th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1 MB</td>
+<td align="right">1.26x</td>
+<td>Sequential sharded collectives are 26% slower than fused AllReduce</td>
+</tr>
+<tr>
+<td align="right">2 MB</td>
+<td align="right">1.23x</td>
+<td>Extra launch/synchronization cost is still visible</td>
+</tr>
+<tr>
+<td align="right">4 MB</td>
+<td align="right">1.24x</td>
+<td>Similar overhead region</td>
+</tr>
+<tr>
+<td align="right">8 MB</td>
+<td align="right">1.26x</td>
+<td>Sharded composition remains slower</td>
+</tr>
+<tr>
+<td align="right">16 MB</td>
+<td align="right">1.25x</td>
+<td>Bandwidth is higher, but two collectives still cost more</td>
+</tr>
+<tr>
+<td align="right">32 MB</td>
+<td align="right">1.24x</td>
+<td>Gap narrows slowly</td>
+</tr>
+<tr>
+<td align="right">64 MB</td>
+<td align="right">1.23x</td>
+<td>Larger messages amortize some overhead</td>
+</tr>
+<tr>
+<td align="right">128 MB</td>
+<td align="right">1.21x</td>
+<td>Sharded composition becomes closer</td>
+</tr>
+<tr>
+<td align="right">256 MB</td>
+<td align="right">1.15x</td>
+<td>Large messages reduce the relative penalty</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/nccl-parallelism/rs-ag-ratio-vs-allreduce.svg" alt="ReduceScatter plus AllGather ratio"></p>
+<p>This result is useful because it separates two questions: <code>AllReduce</code> is the right fused primitive for replicated gradient synchronization, while <code>ReduceScatter</code> and <code>AllGather</code> are useful in sharded training because they avoid keeping full optimizer states, gradients, or parameters resident on every GPU.</p>
+<h2>Connection to DDP, FSDP, and ZeRO</h2>
+<p>The collective experiments make the DDP/FSDP distinction concrete.</p>
+<p>DDP stores complete model state on every GPU:</p>
+<pre><code class="language-text">GPU 0:
+full parameters
+full gradients
+full optimizer states
+
+GPU 1:
+full parameters
+full gradients
+full optimizer states
+</code></pre>
+<p>During backward:</p>
+<pre><code class="language-text">gradient bucket
+    ↓
+AllReduce
+    ↓
+full synchronized gradient on every GPU
+</code></pre>
+<p>FSDP shards model state:</p>
+<pre><code class="language-text">GPU 0:
+parameter shard 0
+gradient shard 0
+optimizer shard 0
+
+GPU 1:
+parameter shard 1
+gradient shard 1
+optimizer shard 1
+</code></pre>
+<p>During computation:</p>
+<pre><code class="language-text">before layer computation:
+    AllGather parameter shards
+
+after backward:
+    ReduceScatter gradients
+</code></pre>
+<p>So the NCCL project explains the communication layer underneath the distributed-training project:</p>
+<table>
+<thead>
+<tr>
+<th>High-level training method</th>
+<th>Main collective pattern</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DDP</td>
+<td>Gradient <code>AllReduce</code>.</td>
+</tr>
+<tr>
+<td>FSDP / ZeRO-3 forward</td>
+<td>Parameter <code>AllGather</code>.</td>
+</tr>
+<tr>
+<td>FSDP / ZeRO-3 backward</td>
+<td>Gradient <code>ReduceScatter</code>.</td>
+</tr>
+<tr>
+<td>Tensor parallel row-parallel layer</td>
+<td>Output <code>AllReduce</code> or equivalent reduction.</td>
+</tr>
+<tr>
+<td>Pipeline parallelism</td>
+<td>Point-to-point activation and gradient transfers between stages.</td>
+</tr>
+</tbody></table>
+<h2>Tensor Parallel Experiment</h2>
+<p><img src="../assets/projects/nccl-parallelism/tensor-parallelism.png" alt="Tensor model parallelism"></p>
+<p>The tensor-parallel notebook is not just a benchmark. It implements a small Megatron-style tensor-parallel Transformer MLP block and compares it with an equivalent dense reference implementation.</p>
+<p>The block structure is:</p>
+<pre><code class="language-text">LayerNorm
+    ↓
+Column Parallel Linear
+    ↓
+GELU
+    ↓
+Row Parallel Linear
+    ↓
+Residual Add
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Parallelization strategy</th>
+<th>Communication behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LayerNorm</td>
+<td>Replicated/local</td>
+<td>No collective needed</td>
+</tr>
+<tr>
+<td>MLP <code>fc1</code></td>
+<td>Column parallel</td>
+<td>Splits output features across GPUs</td>
+</tr>
+<tr>
+<td>GELU</td>
+<td>Local</td>
+<td>Runs independently on each shard</td>
+</tr>
+<tr>
+<td>MLP <code>fc2</code></td>
+<td>Row parallel</td>
+<td>Requires output aggregation</td>
+</tr>
+<tr>
+<td>Residual add</td>
+<td>Local after aggregation</td>
+<td>Uses the reconstructed output</td>
+</tr>
+</tbody></table>
+<h3>Column Parallel Linear</h3>
+<p>A normal linear layer is:</p>
+<pre><code class="language-text">Y = X W
+</code></pre>
+<p>For an MLP expansion such as:</p>
+<pre><code class="language-text">W in R^{H x 4H}
+</code></pre>
+<p>column parallelism splits the output feature dimension:</p>
+<pre><code class="language-text">W = [W_0, W_1]
+</code></pre>
+<p>Each GPU computes:</p>
+<pre><code class="language-text">GPU 0: Y_0 = X W_0
+GPU 1: Y_1 = X W_1
+</code></pre>
+<p>Each rank receives a shard of the output features. If the next operator can consume sharded activations, the code does not need to immediately <code>AllGather</code>. In the notebook, <code>ToyColumnParallelLinear</code> does:</p>
+<pre><code class="language-python">y_local = x @ self.weight
+</code></pre>
+<p>and only gathers when <code>gather_output=True</code>.</p>
+<p>In the notation from the review notes:</p>
+<pre><code class="language-text">W = [W_1, W_2, ..., W_p]
+Y_i = X W_i
+</code></pre>
+<p>The output feature dimension is partitioned. This reduces per-rank parameter memory and per-rank FLOPs for that layer, but it produces sharded output activations.</p>
+<h3>Row Parallel Linear</h3>
+<p>The second linear layer splits the input feature dimension:</p>
+<pre><code class="language-text">W = [W_0
+     W_1]
+</code></pre>
+<p>The input is already sharded:</p>
+<pre><code class="language-text">GPU 0 has X_0
+GPU 1 has X_1
+</code></pre>
+<p>Each GPU computes a partial output:</p>
+<pre><code class="language-text">GPU 0: Y_0 = X_0 W_0
+GPU 1: Y_1 = X_1 W_1
+</code></pre>
+<p>The complete output is:</p>
+<pre><code class="language-text">Y = Y_0 + Y_1
+</code></pre>
+<p>so the row-parallel layer needs:</p>
+<pre><code class="language-text">dist.all_reduce(y_partial, SUM)
+</code></pre>
+<p>In review-note notation:</p>
+<pre><code class="language-text">W = [W_1
+     ...
+     W_p]
+
+Y = sum_i X_i W_i
+</code></pre>
+<p>The input feature dimension is partitioned. Each rank produces a partial output, and a reduction combines those partial outputs. Depending on the next operator, this reduction can be implemented with <code>AllReduce</code> or a sharded variant such as <code>ReduceScatter</code>.</p>
+<h3>Why Column Then Row</h3>
+<p>The reason Megatron-style MLP uses column parallelism for the first projection and row parallelism for the second projection is communication placement.</p>
+<p>After the column-parallel first layer:</p>
+<pre><code class="language-text">GPU 0: first half of intermediate features
+GPU 1: second half of intermediate features
+</code></pre>
+<p><code>GELU</code> is elementwise, so it runs locally on each shard:</p>
+<pre><code class="language-text">GELU requires no communication
+</code></pre>
+<p>The row-parallel second layer can directly consume the sharded intermediate features and only requires one reduction at the output boundary. This avoids a full <code>AllGather</code> between the two MLP linear layers.</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th align="right">Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>World size</td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td>Input shape</td>
+<td align="right"><code>(8, 16)</code></td>
+</tr>
+<tr>
+<td>Output shape</td>
+<td align="right"><code>(8, 16)</code></td>
+</tr>
+<tr>
+<td>Max error vs dense reference</td>
+<td align="right"><code>0.00000012</code></td>
+</tr>
+<tr>
+<td>Mean error vs dense reference</td>
+<td align="right"><code>0.00000000</code></td>
+</tr>
+</tbody></table>
+<p>The notebook constructs both:</p>
+<pre><code class="language-text">ReferenceBlock
+TensorParallelBlock
+</code></pre>
+<p>It slices the reference weights by rank, loads those slices into the tensor-parallel block, then compares output tensors. The small numerical error shows that the tensor-parallel decomposition reproduces the dense block while making the communication site explicit: the row-parallel output needs a reduction across ranks.</p>
+<p>The central lesson is that tensor parallelism is not simply &quot;split every tensor.&quot; The key is choosing compatible partition directions so adjacent operations can stay local and communication happens only where mathematically necessary.</p>
+<h3>Megatron-Style Transformer TP</h3>
+<p>The review notes generalize the toy MLP pattern to Transformer blocks:</p>
+<table>
+<thead>
+<tr>
+<th>Transformer component</th>
+<th>Common TP mapping</th>
+<th>Communication intuition</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>QKV projection</td>
+<td>Column parallel</td>
+<td>Each rank owns a shard of output features or heads.</td>
+</tr>
+<tr>
+<td>Attention heads / intermediate activations</td>
+<td>Local on shards when partitioning is compatible</td>
+<td>Avoids gathering the full intermediate after every projection.</td>
+</tr>
+<tr>
+<td>Attention output projection</td>
+<td>Row parallel</td>
+<td>Partial outputs must be reduced.</td>
+</tr>
+<tr>
+<td>MLP gate/up projection</td>
+<td>Column parallel</td>
+<td>Expands hidden dimension into local shards.</td>
+</tr>
+<tr>
+<td>Elementwise activation</td>
+<td>Local</td>
+<td>GELU/SwiGLU-style work does not need communication.</td>
+</tr>
+<tr>
+<td>MLP down projection</td>
+<td>Row parallel</td>
+<td>Partial outputs are reduced back to the model hidden dimension.</td>
+</tr>
+</tbody></table>
+<p>This is the Megatron-style idea:</p>
+<pre><code class="language-text">column-parallel projection
+        ↓
+local nonlinear or attention work
+        ↓
+row-parallel projection
+        ↓
+selected reduction boundary
+</code></pre>
+<p>Compatible partitions avoid full intermediate gathers after every linear layer. That is why the tensor-parallel experiment is useful even though it is small: it shows where communication is mathematically required and where it can be avoided.</p>
+<p>There are also important limits:</p>
+<ul>
+<li>Attention heads must divide cleanly across tensor-parallel ranks.</li>
+<li>GQA/MQA can complicate KV-head placement when the number of KV heads is smaller than the tensor-parallel degree.</li>
+<li>Replicating KV heads may avoid cross-rank attention communication, but increases memory.</li>
+<li>Sequence parallelism can shard otherwise replicated sequence-dimension activations, but adds collectives around normalization and related operations.</li>
+<li>As tensor-parallel degree grows, local GEMMs shrink while collective frequency remains. TP works best inside a high-bandwidth domain with enough matrix work per rank.</li>
+</ul>
+<h2>Pipeline Parallel Experiment</h2>
+<p><img src="../assets/projects/nccl-parallelism/pipeline-parallelism.png" alt="Pipeline model parallelism"></p>
+<p>The pipeline-parallel notebook splits a toy model into two stages and compares ordinary stage execution with microbatch-based pipelining.</p>
+<p>Pipeline parallelism differs from tensor parallelism:</p>
+<pre><code class="language-text">Tensor Parallel:
+split one layer or tensor across GPUs
+
+Pipeline Parallel:
+place different layers on different GPUs
+</code></pre>
+<p>The toy model is split as:</p>
+<pre><code class="language-text">GPU 0: Stage 0
+Linear -&gt; ReLU -&gt; Linear -&gt; ReLU
+
+GPU 1: Stage 1
+Linear -&gt; ReLU -&gt; Linear
+</code></pre>
+<h3>No-Microbatch Baseline</h3>
+<p>The full-batch execution order is:</p>
+<pre><code class="language-text">GPU 0 Stage 0 forward
+        ↓
+transfer activation GPU 0 -&gt; GPU 1
+        ↓
+GPU 1 Stage 1 forward
+        ↓
+loss
+        ↓
+backward
+        ↓
+optimizer update
+</code></pre>
+<p>This creates large bubbles:</p>
+<pre><code class="language-text">Stage 0 works -&gt; Stage 1 idle
+Stage 1 works -&gt; Stage 0 mostly idle
+</code></pre>
+<p>Simply placing layers on different GPUs does not automatically improve throughput.</p>
+<h3>Microbatch Version</h3>
+<p>The notebook also runs a microbatch version:</p>
+<pre><code class="language-text">batch size = 32
+num microbatches = 4
+microbatch size = 8
+</code></pre>
+<p>Each microbatch flows through the stages and contributes gradients:</p>
+<pre><code class="language-text">zero_grad()
+MB0 backward
+MB1 backward
+MB2 backward
+MB3 backward
+optimizer.step()
+</code></pre>
+<p>The microbatch loss is divided by the number of microbatches:</p>
+<pre><code class="language-text">loss_mb = criterion(...) / num_microbatches
+</code></pre>
+<p>so the accumulated gradient keeps approximately the same scale as the full-batch average gradient.</p>
+<p>In this notebook, microbatching has two meanings:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Gradient accumulation</td>
+<td>Several backward passes occur before one optimizer step.</td>
+</tr>
+<tr>
+<td>Pipeline scheduling unit</td>
+<td>Smaller pieces of work can move through different stages.</td>
+</tr>
+</tbody></table>
+<p>Important limitation: this is an educational microbatch version, not a fully optimized GPipe or 1F1B scheduler. The code still largely executes one microbatch through the stages before moving to the next one, so it should not be claimed as full pipeline overlap.</p>
+<p>An optimized pipeline would overlap stages like:</p>
+<pre><code class="language-text">Time 1:
+Stage 0 -&gt; MB0
+
+Time 2:
+Stage 0 -&gt; MB1
+Stage 1 -&gt; MB0
+
+Time 3:
+Stage 0 -&gt; MB2
+Stage 1 -&gt; MB1
+</code></pre>
+<p>This fill, steady-state, and drain schedule is what reduces pipeline bubbles in realistic multi-stage training.</p>
+<h3>Bubble Fraction and Pipeline Schedules</h3>
+<p>For <code>p</code> pipeline stages and <code>m</code> microbatches, a simple fill/drain bubble fraction is approximately:</p>
+<pre><code class="language-text">bubble ~= (p - 1) / (m + p - 1)
+</code></pre>
+<p>Another common large-<code>m</code> approximation is:</p>
+<pre><code class="language-text">bubble ~= (p - 1) / m
+</code></pre>
+<p>The exact denominator depends on the schedule definition, so it should be stated when reporting pipeline efficiency. The qualitative trend is stable: more microbatches reduce bubbles, but they also increase scheduling overhead and can make local GEMMs too small.</p>
+<p>The review notes distinguish common schedules:</p>
+<table>
+<thead>
+<tr>
+<th>Schedule</th>
+<th>How it works</th>
+<th>Strength</th>
+<th>Limitation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPipe</td>
+<td>Run all microbatch forwards, then all backwards.</td>
+<td>Simple and easy to reason about.</td>
+<td>Can retain many outstanding activations; often needs checkpointing.</td>
+</tr>
+<tr>
+<td>1F1B</td>
+<td>Warm up, then alternate one forward and one backward microbatch in steady state, then cool down.</td>
+<td>Starts backward earlier and limits in-flight activations closer to pipeline depth.</td>
+<td>Does not remove bubbles or stage imbalance.</td>
+</tr>
+<tr>
+<td>Interleaved 1F1B</td>
+<td>Assigns multiple virtual chunks per rank.</td>
+<td>Can reduce bubble fraction further.</td>
+<td>More scheduling and communication complexity.</td>
+</tr>
+</tbody></table>
+<p><img src="../assets/projects/nccl-parallelism/pipeline-1f1b.png" alt="1F1B pipeline schedule"></p>
+<p>The slowest stage limits throughput. Unequal layer cost, inter-stage communication, sequence-length variation, and MoE routing can create imbalance. Pipeline degree, microbatch count, stage placement, activation memory, and inter-stage bandwidth must be tuned together.</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th align="right">Observed step time</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>No microbatch, first step</td>
+<td align="right">0.3275 s</td>
+<td>Includes setup/warmup overhead</td>
+</tr>
+<tr>
+<td>No microbatch, later step</td>
+<td align="right">0.0030 s</td>
+<td>Simple two-stage execution after warmup</td>
+</tr>
+<tr>
+<td>4 microbatches, first step</td>
+<td align="right">0.0740 s</td>
+<td>Pipeline schedule starts to overlap stage work</td>
+</tr>
+<tr>
+<td>4 microbatches, steady state</td>
+<td align="right">0.0070-0.0071 s</td>
+<td>More scheduling overhead than no-microbatch toy case, but exposes pipeline behavior</td>
+</tr>
+</tbody></table>
+<p>The small toy model is too tiny to show a throughput win from pipelining, but it makes the scheduling tradeoff visible. Microbatching reduces idle time in realistic multi-stage models, while 1F1B limits the number of in-flight microbatches and reduces pipeline memory pressure.</p>
+<h2>Combining DP, TP, PP, and FSDP</h2>
+<p>The review notes summarize three-dimensional parallelism as:</p>
+<pre><code class="language-text">N_GPU = N_DP * N_TP * N_PP
+</code></pre>
+<p>Every rank can belong to:</p>
+<pre><code class="language-text">a DP group
+a TP group
+a pipeline stage
+</code></pre>
+<p>The roles are different:</p>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Partitioned object</th>
+<th>Main communication</th>
+<th>Main objective</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>DP</td>
+<td>Samples</td>
+<td>Gradient reduction</td>
+<td>Data throughput.</td>
+</tr>
+<tr>
+<td>TP</td>
+<td>Tensors within a layer</td>
+<td><code>AllReduce</code>, <code>ReduceScatter</code>, <code>AllGather</code></td>
+<td>Layer capacity and compute sharing.</td>
+</tr>
+<tr>
+<td>PP</td>
+<td>Consecutive layers</td>
+<td>Point-to-point activations and gradients</td>
+<td>Model depth capacity.</td>
+</tr>
+<tr>
+<td>FSDP</td>
+<td>Data-parallel model states</td>
+<td>Parameter gather, gradient scatter</td>
+<td>Remove DP state redundancy.</td>
+</tr>
+</tbody></table>
+<p>For example, with 64 GPUs:</p>
+<pre><code class="language-text">N_TP = 4
+N_PP = 4
+N_DP = 4
+
+N_GPU = 4 * 4 * 4 = 64
+</code></pre>
+<p>This means:</p>
+<pre><code class="language-text">4 GPUs cooperate within each layer through tensor parallelism.
+4 pipeline stages cover the model depth.
+4 data-parallel replicas process different data.
+</code></pre>
+<p>TP is usually kept inside the fastest interconnect domain because it communicates inside layers. PP spans groups of layers. The remaining capacity is often used for DP. FSDP can be used along the data-parallel axis to reduce replicated model-state memory.</p>
+<p>A practical global-batch formula may look like:</p>
+<pre><code class="language-text">B_global = N_DP * B_micro * m * K_outer
+</code></pre>
+<p>where <code>m</code> is the number of pipeline microbatches and <code>K_outer</code> is an outer accumulation count. The warning from the notes is important: pipeline microbatches often already implement accumulation, so <code>m</code> must not be multiplied twice if the framework&#39;s configured accumulation count already includes it. The safest definition is always:</p>
+<pre><code class="language-text">number of samples or tokens that contribute to one optimizer update
+</code></pre>
+<p>This is why the NCCL project matters for large-model systems: each parallelism axis maps to different collective or point-to-point communication. Choosing DP, TP, PP, FSDP, or a combination is really choosing where memory is saved, where compute is split, and where communication appears on the critical path.</p>
+<h2>Main Conclusions</h2>
+<p>The four experiments form a complete path from raw communication to model parallelism.</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Experiment</th>
+<th>Main conclusion</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Communication performance</td>
+<td>AllReduce sweep</td>
+<td>Small messages are latency-bound; large messages become bandwidth-bound and saturate around 4 GB/s on the 2 x T4 setup.</td>
+</tr>
+<tr>
+<td>Collective primitives</td>
+<td>AllReduce vs ReduceScatter/AllGather</td>
+<td><code>AllReduce</code> is natural for DDP; <code>ReduceScatter</code> and <code>AllGather</code> are useful for sharded training state.</td>
+</tr>
+<tr>
+<td>Tensor parallelism</td>
+<td>Megatron-style MLP</td>
+<td>Correct partition directions avoid unnecessary intermediate gathers and require one output reduction.</td>
+</tr>
+<tr>
+<td>Pipeline parallelism</td>
+<td>Two-stage toy model</td>
+<td>Layer placement alone does not guarantee speedup; microbatch scheduling is needed to reduce bubbles.</td>
+</tr>
+</tbody></table>
+<p>Conclusion 1: small messages are latency-limited.</p>
+<pre><code class="language-text">small message -&gt; low bandwidth -&gt; nearly fixed communication time
+</code></pre>
+<p>This explains why too-small gradient buckets, too-frequent synchronization, and missing <code>no_sync()</code> during gradient accumulation can hurt training performance.</p>
+<p>Conclusion 2: large messages become bandwidth-limited.</p>
+<pre><code class="language-text">larger message -&gt; higher effective bandwidth -&gt; plateau
+</code></pre>
+<p>In the 2 x Tesla T4 setup, the AllReduce bus bandwidth reaches roughly <code>4 GB/s</code> for large messages. Larger gradient buckets can better utilize bandwidth, but may also start later and reduce overlap with backward computation.</p>
+<p>Conclusion 3: DDP and FSDP use different collective patterns.</p>
+<pre><code class="language-text">DDP:
+gradient AllReduce
+
+FSDP / ZeRO:
+parameter AllGather
+gradient ReduceScatter
+</code></pre>
+<p>FSDP lowers memory residency but adds more communication phases and more complex timing.</p>
+<p>Conclusion 4: tensor parallelism is about communication placement.</p>
+<p>The useful design is:</p>
+<pre><code class="language-text">fc1 column parallel
+GELU local
+fc2 row parallel
+one AllReduce at the end
+</code></pre>
+<p>This is more efficient than gathering after every layer because adjacent operations use compatible sharding.</p>
+<p>Conclusion 5: pipeline parallelism is about scheduling.</p>
+<p>Simply splitting layers across GPUs creates bubbles. Efficient pipeline parallelism needs microbatch scheduling with fill, steady state, and drain phases so that multiple stages work at the same time.</p>
+<h2>Result Analysis</h2>
+<p>The experiments show three main communication regimes. First, small collectives are latency-bound: bytes-scale AllReduce calls spend most of their time in launch, synchronization, and protocol overhead. Second, large collectives are bandwidth-bound: AllReduce reaches roughly 4 GB/s bus bandwidth on the 2 x T4 environment and stays flat from tens of MB through 512 MB. Third, sharded collectives change the memory and ownership model rather than simply replacing AllReduce as a faster primitive.</p>
+<p><code>ReduceScatter</code> and <code>AllGather</code> are each cheaper than a full AllReduce because each primitive only produces a shard or reconstructs from shards. However, running them sequentially to emulate AllReduce is 1.15x-1.26x slower in this setup because two collectives introduce extra launch and synchronization overhead. In FSDP/ZeRO, the benefit comes from using these collectives at the right points in the training step so that parameters, gradients, and optimizer states can stay sharded instead of fully replicated.</p>
+<p>The tensor-parallel and pipeline-parallel notebooks connect these low-level collectives to model execution. Tensor parallelism inserts reductions at layer boundaries, while pipeline parallelism trades larger scheduling complexity for the ability to partition a model across stages. Together, the project builds a practical mental model for choosing between replicated data parallel training, sharded data parallel training, tensor parallelism, and pipeline parallelism.</p>
+<p>The most important interview framing is:</p>
+<pre><code class="language-text">NCCL collectives are not just benchmark numbers.
+They define the cost model behind DDP, FSDP, tensor parallelism, and pipeline parallelism.
+</code></pre>
+<p>When a training system is slow, the right diagnosis depends on where communication appears:</p>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely communication issue</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Many tiny collective calls</td>
+<td>Latency and launch overhead dominate.</td>
+</tr>
+<tr>
+<td>Large gradients but poor overlap</td>
+<td>Buckets may be too large or ready too late.</td>
+</tr>
+<tr>
+<td>FSDP slower than DDP</td>
+<td>Extra AllGather/ReduceScatter overhead is not offset by useful larger workload shape.</td>
+</tr>
+<tr>
+<td>Tensor parallel slowdown</td>
+<td>Local GEMMs may be too small, or collectives appear too frequently.</td>
+</tr>
+<tr>
+<td>Pipeline stages idle</td>
+<td>Microbatch schedule has large bubbles or insufficient overlap.</td>
+</tr>
+</tbody></table>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>

@@ -1,0 +1,739 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PyTorch Compiler and AI Compiler Pipeline Project</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>PyTorch Compiler and AI Compiler Pipeline Project</h1>
+<p>This project studies how modern ML compiler stacks turn PyTorch programs into optimized GPU execution, and why compilation does not always make a workload faster. I built a compiler/runtime benchmarking project and a toy AI compiler pipeline to connect frontend graph transformations with backend GPU performance.</p>
+<p>The project also includes a compiler explainer that walks from eager-mode execution to graph capture, TorchDynamo, FX graphs, graph breaks, guards, caching, TorchInductor, and Triton/CUDA code generation.</p>
+<p><img src="../assets/projects/pytorch-compiler/pytorch-compiler-stack-from-pytorch-to-triton.png" alt="PyTorch compiler stack from PyTorch to Triton"></p>
+<p><img src="../assets/projects/pytorch-compiler/mini-pytorch-to-triton-compiler-benchmarks.png" alt="Mini PyTorch-to-Triton compiler benchmarks"></p>
+<p><img src="../assets/projects/pytorch-compiler/mini-pytorch-to-triton-compiler-pipeline.png" alt="Mini PyTorch-to-Triton compiler pipeline"></p>
+<p><img src="../assets/projects/pytorch-compiler/graph-capture-vs-graph-break.png" alt="Graph capture versus graph break in TorchDynamo"></p>
+<p><img src="../assets/projects/pytorch-compiler/torch-compile-workload-dependent-benchmarks.png" alt="torch.compile workload-dependent compiler benchmarks"></p>
+<p><a href="../assets/projects/compiler.pdf">Download the original project explainer PDF</a></p>
+<h2>Project Goal</h2>
+<p>The goal was to understand the full path from Python-level PyTorch code to generated GPU kernels:</p>
+<ul>
+<li>How one line of PyTorch can become several GPU kernels in eager mode.</li>
+<li>How <code>torch.compile</code> captures and transforms model execution.</li>
+<li>How TorchDynamo, FX, AOTAutograd, and TorchInductor interact.</li>
+<li>When compiler optimizations such as fusion reduce latency and memory traffic.</li>
+<li>Why graph breaks, dynamic shapes, Python control flow, or small workloads can erase the expected speedup.</li>
+<li>How a simplified compiler pipeline can lower graph patterns into Triton kernels.</li>
+</ul>
+<h2>Motivation: One Line of PyTorch, Many GPU Kernels</h2>
+<p>At the Python level, a statement can look like one simple expression:</p>
+<pre><code class="language-python">y = torch.relu(x @ w + b)
+</code></pre>
+<p>In eager mode, PyTorch may execute this as multiple operations:</p>
+<ol>
+<li>A matrix multiplication kernel.</li>
+<li>An add kernel.</li>
+<li>A ReLU kernel.</li>
+</ol>
+<p>Each step may read from and write back to GPU global memory. This is flexible and easy to debug, but it can create extra kernel launches, intermediate tensors, and repeated high-bandwidth memory traffic.</p>
+<h2>What Happens in Eager Mode</h2>
+<p>Eager mode executes immediately and optimizes locally. For:</p>
+<pre><code class="language-python">y = torch.relu(x @ w + b)
+</code></pre>
+<p>execution may look like:</p>
+<ol>
+<li><strong>Matmul</strong><ul>
+<li>Read <code>x</code> and <code>w</code>.</li>
+<li>Compute <code>x @ w</code>.</li>
+<li>Write an intermediate result to HBM.</li>
+</ul>
+</li>
+<li><strong>Add</strong><ul>
+<li>Read the intermediate result from HBM.</li>
+<li>Read <code>b</code>.</li>
+<li>Compute <code>x @ w + b</code>.</li>
+<li>Write another intermediate result to HBM.</li>
+</ul>
+</li>
+<li><strong>ReLU</strong><ul>
+<li>Read the intermediate result from HBM.</li>
+<li>Compute <code>relu</code>.</li>
+<li>Write the final output to HBM.</li>
+</ul>
+</li>
+</ol>
+<p>The computation is correct, but there can be too much HBM reading and writing.</p>
+<h2>Why This Is a Problem</h2>
+<p>The GPU is fast, but memory traffic is expensive. Eager mode can introduce several sources of overhead:</p>
+<ul>
+<li>Kernel launch overhead.</li>
+<li>Python dispatch overhead.</li>
+<li>Intermediate tensor materialization.</li>
+<li>Repeated HBM reads and writes.</li>
+<li>Limited cross-operator optimization.</li>
+</ul>
+<p>For small operations, launch overhead can dominate. For large tensors, HBM traffic can dominate.</p>
+<h2>The Bridge to Graph Capture</h2>
+<p>Instead of executing each operation immediately:</p>
+<pre><code class="language-text">add kernel
+mul kernel
+sigmoid kernel
+relu kernel
+add kernel
+</code></pre>
+<p>the compiler wants to first capture the whole computation:</p>
+<pre><code class="language-text">x
+-&gt; add
+-&gt; mul
+-&gt; sigmoid
+-&gt; add with relu(x)
+-&gt; output
+</code></pre>
+<p>Once the computation is visible as a graph, the compiler can attempt to turn several operations into one fused kernel.</p>
+<h2>Graph Capture</h2>
+<p>Example Python code:</p>
+<pre><code class="language-python">def f(x):
+    y = x + 1
+    y = y * 2
+    y = torch.relu(y)
+    return y
+</code></pre>
+<p>Captured graph:</p>
+<pre><code class="language-text">x -&gt; add -&gt; multiply -&gt; relu -&gt; output
+</code></pre>
+<p>Once the compiler has a graph, it can apply:</p>
+<ul>
+<li>Operator fusion.</li>
+<li>Memory planning.</li>
+<li>Decomposition.</li>
+<li>Lowering.</li>
+<li>Code generation.</li>
+</ul>
+<h2>PyTorch Compiler Pipeline</h2>
+<p>The project studies the PyTorch 2.x compiler path:</p>
+<pre><code class="language-text">PyTorch eager code
+-&gt; TorchDynamo
+-&gt; FX Graph
+-&gt; AOTAutograd
+-&gt; TorchInductor
+-&gt; Triton / CUDA / external kernels
+-&gt; optimized execution
+</code></pre>
+<p>Each component has a distinct role:</p>
+<ul>
+<li><strong>TorchDynamo</strong> captures Python/PyTorch code into a graph.</li>
+<li><strong>FX Graph</strong> represents the captured computation.</li>
+<li><strong>AOTAutograd</strong> handles forward and backward graphs for training.</li>
+<li><strong>TorchInductor</strong> optimizes and lowers the graph.</li>
+<li><strong>Triton/CUDA/external kernels</strong> execute on hardware.</li>
+</ul>
+<h2>TorchDynamo as the Frontend</h2>
+<p>TorchDynamo is the frontend of <code>torch.compile</code>. It intercepts Python execution and extracts PyTorch tensor operations into FX graphs.</p>
+<p>It works at the Python frame and bytecode level, which allows normal PyTorch code to stay mostly unchanged:</p>
+<pre><code class="language-python">compiled_model = torch.compile(model)
+</code></pre>
+<h2>TorchDynamo Is Not Ordinary Tracing</h2>
+<p>Ordinary tracing usually runs the function once and records what happened:</p>
+<pre><code class="language-python">def f(x, flag):
+    if flag:
+        return torch.relu(x)
+    else:
+        return torch.sigmoid(x)
+</code></pre>
+<p>A normal trace may only record the branch taken by the example input. TorchDynamo works at the Python frame and bytecode level, so it can inspect Python execution more carefully, insert guards, and handle graph breaks.</p>
+<h2>The Compiler Wants a Continuous Graph</h2>
+<p>For a simple tensor-only function:</p>
+<pre><code class="language-python">def f(x):
+    a = x + 1
+    b = a * 2
+    c = torch.relu(b)
+    return c
+</code></pre>
+<p>TorchDynamo can capture the whole function as one graph:</p>
+<pre><code class="language-text">x -&gt; add -&gt; multiply -&gt; relu -&gt; output
+</code></pre>
+<p>This is good for the compiler because the whole computation is visible. Once the full region is captured, TorchInductor can fuse operations, reduce memory traffic, and generate optimized code.</p>
+<h2>Graph Breaks</h2>
+<p>A graph break happens when TorchDynamo cannot safely continue capturing Python code into the same FX graph.</p>
+<p>Instead of one continuous graph:</p>
+<pre><code class="language-text">x -&gt; add -&gt; multiply -&gt; relu -&gt; output
+</code></pre>
+<p>Dynamo may split execution into:</p>
+<pre><code class="language-text">Graph 1: x -&gt; add
+Python eager execution
+Graph 2: multiply -&gt; relu -&gt; output
+</code></pre>
+<p>The program can still run correctly, but the compiler no longer sees the whole computation at once.</p>
+<h2>Example: <code>.item()</code> Breaks the Tensor World</h2>
+<p>Consider this function:</p>
+<pre><code class="language-python">def f(x):
+    if x.sum().item() &gt; 0:
+        return x * 2
+    else:
+        return x - 2
+</code></pre>
+<p><code>x.sum()</code> is a tensor operation, but <code>.item()</code> converts the tensor value into a Python scalar. Then the Python <code>if</code> statement depends on runtime tensor data. This is difficult to capture as a static graph.</p>
+<p>When code contains:</p>
+<pre><code class="language-python">if x.sum().item() &gt; 0:
+</code></pre>
+<p>three things happen:</p>
+<ul>
+<li>A GPU tensor value must be converted into a Python scalar.</li>
+<li>Python control flow depends on that scalar.</li>
+<li>The graph structure may depend on runtime data.</li>
+</ul>
+<p>This may also force synchronization:</p>
+<pre><code class="language-text">GPU computes x.sum()
+-&gt; CPU/Python waits for the value
+-&gt; Python decides which branch to run
+</code></pre>
+<p>That breaks the compiler&#39;s ability to optimize the whole computation as one graph.</p>
+<h2>Avoiding This Graph Break</h2>
+<p>Instead of using Python control flow based on <code>.item()</code>:</p>
+<pre><code class="language-python">def f(x):
+    if x.sum().item() &gt; 0:
+        return x * 2
+    else:
+        return x - 2
+</code></pre>
+<p>the computation can be expressed with tensor operations:</p>
+<pre><code class="language-python">def f(x):
+    cond = x.sum() &gt; 0
+    return torch.where(cond, x * 2, x - 2)
+</code></pre>
+<p>This can be represented as a graph:</p>
+<pre><code class="language-text">x -&gt; sum -&gt; compare
+x -&gt; multiply by 2
+x -&gt; subtract 2
+-&gt; torch.where
+-&gt; output
+</code></pre>
+<h2>Other Common Causes of Graph Breaks</h2>
+<p>Graph breaks are often caused by Python behavior that cannot be safely represented inside an FX graph:</p>
+<ul>
+<li>Python I/O or logging inside the compiled region, such as <code>print(x.shape)</code>.</li>
+<li>Python side effects and mutation, such as <code>cache.append(x)</code>.</li>
+<li>Loop counts that depend on runtime tensor data:</li>
+</ul>
+<pre><code class="language-python">n = int(x[0].item())
+for _ in range(n):
+    x = x + 1
+</code></pre>
+<ul>
+<li>External libraries that Dynamo cannot capture safely:</li>
+</ul>
+<pre><code class="language-python">some_external_library(x)
+</code></pre>
+<h2>Performance Impact of Graph Breaks</h2>
+<p>Graph breaks can hurt performance because they reduce the compiler&#39;s optimization scope.</p>
+<p>Without a graph break:</p>
+<pre><code class="language-text">add -&gt; multiply -&gt; sigmoid -&gt; relu -&gt; add
+</code></pre>
+<p>TorchInductor may fuse the whole chain into one kernel.</p>
+<p>With a graph break:</p>
+<pre><code class="language-text">Graph 1: add -&gt; multiply
+Python eager region
+Graph 2: sigmoid -&gt; relu -&gt; add
+</code></pre>
+<p>Consequences include:</p>
+<ul>
+<li>Less operator fusion.</li>
+<li>More intermediate tensor materialization.</li>
+<li>More kernel launches.</li>
+<li>More Python dispatch overhead.</li>
+<li>Possible CPU-GPU synchronization.</li>
+<li>More fragmented execution.</li>
+</ul>
+<h2>Guards</h2>
+<p>When Dynamo compiles a graph, it makes assumptions about the inputs and Python state:</p>
+<ul>
+<li>Input shape.</li>
+<li>Input dtype.</li>
+<li>Input device.</li>
+<li>Tensor layout and stride.</li>
+<li>Module attributes.</li>
+<li>Python object state.</li>
+</ul>
+<p>Example guard assumptions:</p>
+<pre><code class="language-text">x.shape == [32, 768]
+x.dtype == float16
+x.device == cuda
+x is contiguous
+</code></pre>
+<p>Guards check whether these assumptions still hold on the next call.</p>
+<h2>Cache and Recompilation</h2>
+<p>Compilation is expensive, so Dynamo and the compiler stack try to avoid compiling the same graph again.</p>
+<p>On the first call:</p>
+<pre><code class="language-text">capture graph
+-&gt; compile graph
+-&gt; generate code
+-&gt; store compiled version in cache
+-&gt; execute
+</code></pre>
+<p>On a later call:</p>
+<pre><code class="language-text">check guards
+-&gt; guards pass
+-&gt; reuse cached compiled version
+-&gt; execute
+</code></pre>
+<p>If guards fail:</p>
+<pre><code class="language-text">recompile
+-&gt; create a new cached version
+</code></pre>
+<p>This is why dynamic shapes, changing layouts, or changing Python object state can trigger recompilation and reduce the practical benefit of compilation.</p>
+<h2>TorchInductor</h2>
+<p>TorchDynamo answers:</p>
+<pre><code class="language-text">Can we capture this Python/PyTorch program as a graph?
+</code></pre>
+<p>TorchInductor answers:</p>
+<pre><code class="language-text">How do we make this graph run faster?
+</code></pre>
+<p>TorchInductor performs:</p>
+<ul>
+<li>Fusion.</li>
+<li>Decomposition.</li>
+<li>Memory planning.</li>
+<li>Lowering.</li>
+<li>Scheduling.</li>
+<li>Code generation.</li>
+</ul>
+<p>On GPU, TorchInductor often generates Triton kernels or calls external libraries such as cuBLAS.</p>
+<h2>Benchmark Workloads</h2>
+<p>I evaluated representative ML and attention workloads where compiler behavior can be inspected clearly:</p>
+<ul>
+<li>MLP blocks.</li>
+<li>LayerNorm.</li>
+<li>Elementwise operator chains.</li>
+<li>Naive attention.</li>
+<li>SDPA attention.</li>
+<li>Fused elementwise patterns.</li>
+<li>MLP-style kernels such as Linear + ReLU.</li>
+</ul>
+<p>For each workload, I compared eager execution and compiled execution across cold-start and steady-state settings.</p>
+<h2>What I Measured</h2>
+<ul>
+<li>Cold-start compile time.</li>
+<li>Steady-state latency.</li>
+<li>Compilation overhead.</li>
+<li>Kernel launch count.</li>
+<li>Operator fusion opportunities.</li>
+<li>Optimized library dispatch behavior.</li>
+<li>Memory traffic and intermediate tensor materialization.</li>
+<li>Small-batch overhead and cases where eager execution remains competitive.</li>
+</ul>
+<h2>TorchInductor Code and Runtime Analysis</h2>
+<p>I inspected TorchInductor-generated code and profiling results to connect compiler decisions with runtime behavior. The analysis focused on:</p>
+<ul>
+<li>Which operators were fused into generated kernels.</li>
+<li>Which operations still dispatched to existing optimized libraries.</li>
+<li>How many GPU kernels were launched before and after compilation.</li>
+<li>Whether intermediate tensors were materialized in global memory.</li>
+<li>How generated Triton/CUDA kernels affected memory movement and launch overhead.</li>
+</ul>
+<p>This made the compiler pipeline more concrete: graph-level transformations could be tied directly to GPU runtime effects such as kernel launches, memory traffic, and fusion benefits.</p>
+<h2>Toy AI Compiler Pipeline</h2>
+<p>To understand the compiler stack from first principles, I also built a simplified AI compiler pipeline with:</p>
+<ul>
+<li>Frontend IR construction.</li>
+<li>Graph-level pattern matching.</li>
+<li>Operator fusion passes.</li>
+<li>Lowering from graph representation to backend code.</li>
+<li>Triton code generation for fused elementwise and MLP-style kernels.</li>
+</ul>
+<p>Example fusion targets included elementwise chains and Linear + ReLU style patterns. The toy pipeline demonstrated how a compiler can identify repeated graph structures, fuse them, and generate a lower-level GPU implementation.</p>
+<h2>Experiment Results</h2>
+<p>The complete experiments come from two notebooks:</p>
+<ul>
+<li><a href="https://github.com/licheng2018/AI-compiler/blob/main/torch_compile_colab_skeleton.ipynb">torch_compile_colab_skeleton.ipynb</a></li>
+<li><a href="https://github.com/licheng2018/AI-compiler/blob/main/Mini_PyTorch_to_Triton_Compiler.ipynb">Mini_PyTorch_to_Triton_Compiler.ipynb</a></li>
+</ul>
+<p>Both notebooks were run on a Tesla T4 GPU with CUDA 12.8 and PyTorch 2.11.0+cu128. The mini compiler notebook used Triton 3.6.0.</p>
+<h3>MLP: Eager vs. <code>torch.compile</code></h3>
+<p>Workload: MLP with <code>D=768</code>, <code>DFF=3072</code>, <code>float16</code>.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Batch</th>
+<th align="right">Eager first run (ms)</th>
+<th align="right">Eager steady avg (ms)</th>
+<th align="right">Compile first run (ms)</th>
+<th align="right">Compile steady avg (ms)</th>
+<th align="right">Steady speedup</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1</td>
+<td align="right">321.220</td>
+<td align="right">0.106</td>
+<td align="right">8828.449</td>
+<td align="right">0.208</td>
+<td align="right">0.51x</td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td align="right">14.804</td>
+<td align="right">0.123</td>
+<td align="right">987.963</td>
+<td align="right">0.243</td>
+<td align="right">0.50x</td>
+</tr>
+<tr>
+<td align="right">32</td>
+<td align="right">2.677</td>
+<td align="right">0.139</td>
+<td align="right">0.439</td>
+<td align="right">0.241</td>
+<td align="right">0.57x</td>
+</tr>
+<tr>
+<td align="right">128</td>
+<td align="right">41.330</td>
+<td align="right">0.221</td>
+<td align="right">0.442</td>
+<td align="right">0.287</td>
+<td align="right">0.77x</td>
+</tr>
+<tr>
+<td align="right">512</td>
+<td align="right">0.575</td>
+<td align="right">0.462</td>
+<td align="right">0.797</td>
+<td align="right">0.523</td>
+<td align="right">0.88x</td>
+</tr>
+</tbody></table>
+<p>Dynamo inspection for the MLP produced one graph with zero graph breaks and three captured ops: <code>linear</code>, <code>gelu</code>, and <code>linear</code>. Even with clean graph capture, compiled execution was slower in steady state for this GEMM-heavy workload because eager PyTorch already dispatches to highly optimized library kernels.</p>
+<h3>Elementwise Fusion</h3>
+<p>Workload: elementwise chain in <code>float16</code>.</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">Eager first run (ms)</th>
+<th align="right">Eager steady avg (ms)</th>
+<th align="right">Compile first run (ms)</th>
+<th align="right">Compile steady avg (ms)</th>
+<th align="right">Steady speedup</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1,024</td>
+<td align="right">108.165</td>
+<td align="right">0.075</td>
+<td align="right">385.398</td>
+<td align="right">0.088</td>
+<td align="right">0.85x</td>
+</tr>
+<tr>
+<td align="right">1,048,576</td>
+<td align="right">0.170</td>
+<td align="right">0.099</td>
+<td align="right">395.395</td>
+<td align="right">0.105</td>
+<td align="right">0.94x</td>
+</tr>
+<tr>
+<td align="right">16,777,216</td>
+<td align="right">1.741</td>
+<td align="right">1.528</td>
+<td align="right">0.621</td>
+<td align="right">0.460</td>
+<td align="right">3.32x</td>
+</tr>
+</tbody></table>
+<p>The large elementwise case shows the clearest compiler win: at <code>N=16,777,216</code>, compiled execution reached a 3.32x steady-state speedup. This matches the expected benefit of fusion: fewer kernel launches and less repeated global memory traffic.</p>
+<h3>Attention: Naive Attention, Compiled Attention, and SDPA</h3>
+<p>Workload: <code>B=1</code>, <code>H=8</code>, <code>D=64</code>, <code>float16</code>.</p>
+<table>
+<thead>
+<tr>
+<th align="right">Sequence N</th>
+<th align="right">Naive eager avg (ms)</th>
+<th align="right">Naive compile avg (ms)</th>
+<th align="right">Naive compile speedup</th>
+<th align="right">SDPA eager avg (ms)</th>
+<th align="right">SDPA compile avg (ms)</th>
+<th>Best steady path</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">128</td>
+<td align="right">0.172</td>
+<td align="right">0.125</td>
+<td align="right">1.38x</td>
+<td align="right">0.037</td>
+<td align="right">0.124</td>
+<td>SDPA eager</td>
+</tr>
+<tr>
+<td align="right">256</td>
+<td align="right">0.152</td>
+<td align="right">0.150</td>
+<td align="right">1.01x</td>
+<td align="right">0.043</td>
+<td align="right">0.138</td>
+<td>SDPA eager</td>
+</tr>
+<tr>
+<td align="right">512</td>
+<td align="right">0.172</td>
+<td align="right">0.161</td>
+<td align="right">1.07x</td>
+<td align="right">0.075</td>
+<td align="right">0.151</td>
+<td>SDPA eager</td>
+</tr>
+<tr>
+<td align="right">1024</td>
+<td align="right">0.585</td>
+<td align="right">0.300</td>
+<td align="right">1.95x</td>
+<td align="right">0.218</td>
+<td align="right">0.296</td>
+<td>SDPA eager</td>
+</tr>
+</tbody></table>
+<p>Compiling naive attention helped most at longer sequence length, especially <code>N=1024</code>, where the naive compiled path was nearly 2x faster than naive eager. However, PyTorch SDPA eager remained the fastest steady-state path across all tested sequence lengths, showing that calling the right optimized primitive can beat compiling a naive implementation.</p>
+<h3>Graph Break and Full-Graph Debugging</h3>
+<table>
+<thead>
+<tr>
+<th>Function / case</th>
+<th align="right">Graph count</th>
+<th align="right">Graph break count</th>
+<th align="right">Op count</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Tensor-only function: add -&gt; ReLU -&gt; multiply</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">3</td>
+<td>Captured as one continuous graph.</td>
+</tr>
+<tr>
+<td><code>.item()</code> data-dependent branch</td>
+<td align="right">2</td>
+<td align="right">1</td>
+<td align="right">1</td>
+<td>Broke graph capture because <code>Tensor.item()</code> converted tensor data into Python control flow.</td>
+</tr>
+<tr>
+<td><code>torch.where</code> rewrite</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">4</td>
+<td>Fixed the graph break by keeping the branch as tensor computation.</td>
+</tr>
+<tr>
+<td><code>fullgraph=True</code> with <code>.item()</code> branch</td>
+<td align="right">Failed</td>
+<td align="right">Failed</td>
+<td align="right">N/A</td>
+<td>Compilation failed because Dynamo could not guard on a data-dependent expression.</td>
+</tr>
+<tr>
+<td><code>fullgraph=True</code> with tensor-friendly rewrite</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">N/A</td>
+<td>Compiled successfully.</td>
+</tr>
+</tbody></table>
+<p>The graph-break experiments show that correctness and compilability are different. A function can run correctly in eager mode while still being a poor candidate for compilation because Python control flow fragments the graph.</p>
+<h3>Dynamic Shape and Recompilation</h3>
+<p>Batch-size variation for shape <code>(B, 128, 256)</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Compile mode</th>
+<th>Shape sequence</th>
+<th>Observed elapsed times (ms)</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Static compile</td>
+<td><code>(1,128,256)</code>, <code>(2,128,256)</code>, <code>(4,128,256)</code>, <code>(8,128,256)</code>, <code>(1,128,256)</code></td>
+<td>569.467, 534.745, 543.342, 530.246, 0.394</td>
+<td>New shapes triggered expensive compilation/recompilation; the repeated shape reused cache.</td>
+</tr>
+<tr>
+<td>Dynamic compile</td>
+<td><code>(1,128,256)</code>, <code>(2,128,256)</code>, <code>(4,128,256)</code>, <code>(8,128,256)</code>, <code>(1,128,256)</code></td>
+<td>902.859, 777.453, 0.468, 0.460, 0.335</td>
+<td>Higher initial compilation cost, then broad reuse across later batch sizes.</td>
+</tr>
+</tbody></table>
+<p>Sequence-length variation for shape <code>(1, S, 256)</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Compile mode</th>
+<th>Shape sequence</th>
+<th>Observed elapsed times (ms)</th>
+<th>Interpretation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Static compile</td>
+<td><code>(1,64,256)</code>, <code>(1,128,256)</code>, <code>(1,256,256)</code>, <code>(1,512,256)</code>, <code>(1,128,256)</code></td>
+<td>576.871, 0.540, 640.394, 10.249, 0.402</td>
+<td>Shape changes triggered recompilation; Dynamo also hit the recompile limit due to sequence-length mismatch.</td>
+</tr>
+<tr>
+<td>Dynamic compile</td>
+<td><code>(1,64,256)</code>, <code>(1,128,256)</code>, <code>(1,256,256)</code>, <code>(1,512,256)</code>, <code>(1,128,256)</code></td>
+<td>0.421, 0.464, 0.376, 0.308, 0.369</td>
+<td>Dynamic compile reused the compiled path across sequence lengths after setup.</td>
+</tr>
+</tbody></table>
+<h3>Backend Comparison</h3>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th align="right">First run (ms)</th>
+<th align="right">Steady avg (ms)</th>
+<th align="right">Steady p50 (ms)</th>
+<th align="right">Steady p95 (ms)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Raw eager</td>
+<td align="right">99.820</td>
+<td align="right">0.184</td>
+<td align="right">0.180</td>
+<td align="right">0.262</td>
+</tr>
+<tr>
+<td><code>torch.compile</code>, backend=<code>eager</code></td>
+<td align="right">68.763</td>
+<td align="right">0.185</td>
+<td align="right">0.177</td>
+<td align="right">0.223</td>
+</tr>
+<tr>
+<td><code>torch.compile</code>, backend=<code>aot_eager</code></td>
+<td align="right">83.465</td>
+<td align="right">0.284</td>
+<td align="right">0.251</td>
+<td align="right">0.354</td>
+</tr>
+<tr>
+<td><code>torch.compile</code>, backend=<code>inductor</code></td>
+<td align="right">935.247</td>
+<td align="right">0.212</td>
+<td align="right">0.206</td>
+<td align="right">0.260</td>
+</tr>
+</tbody></table>
+<p>This comparison separates graph-capture overhead from backend code-generation benefit. In this test, Inductor had the largest first-run cost and did not beat raw eager in steady-state latency.</p>
+<h3>Mini PyTorch-to-Triton Compiler</h3>
+<p>The mini compiler notebook implemented a small end-to-end compiler flow:</p>
+<pre><code class="language-text">PyTorch function
+-&gt; FX graph capture
+-&gt; custom mini IR
+-&gt; add + ReLU pattern fusion
+-&gt; Triton kernel lowering
+-&gt; runtime wrapper
+-&gt; correctness and performance benchmark
+</code></pre>
+<p>FX graph for the frontend function:</p>
+<pre><code class="language-text">x, bias -&gt; operator.add -&gt; torch.relu -&gt; output
+</code></pre>
+<p>Mini IR before fusion:</p>
+<pre><code class="language-text">placeholder(x)
+placeholder(bias)
+add(x, bias)
+relu(add)
+output(relu)
+</code></pre>
+<p>Mini IR after fusion:</p>
+<pre><code class="language-text">placeholder(x)
+placeholder(bias)
+fused_add_relu(x, bias)
+output(relu)
+</code></pre>
+<p>Correctness check: maximum difference was <code>0.0</code>.</p>
+<table>
+<thead>
+<tr>
+<th align="right">N</th>
+<th align="right">Eager first run (ms)</th>
+<th align="right">Eager steady avg (ms)</th>
+<th align="right">Triton first run (ms)</th>
+<th align="right">Triton steady avg (ms)</th>
+<th align="right">Speedup over eager</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1,024</td>
+<td align="right">0.101</td>
+<td align="right">0.039</td>
+<td align="right">0.101</td>
+<td align="right">0.049</td>
+<td align="right">0.78x</td>
+</tr>
+<tr>
+<td align="right">1,048,576</td>
+<td align="right">0.103</td>
+<td align="right">0.103</td>
+<td align="right">0.139</td>
+<td align="right">0.089</td>
+<td align="right">1.16x</td>
+</tr>
+<tr>
+<td align="right">16,777,216</td>
+<td align="right">1.409</td>
+<td align="right">1.402</td>
+<td align="right">0.932</td>
+<td align="right">0.861</td>
+<td align="right">1.63x</td>
+</tr>
+</tbody></table>
+<p>For reference, <code>torch.compile</code> with Inductor on the same <code>N=16,777,216</code> add+ReLU workload reported:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th align="right">First run (ms)</th>
+<th align="right">Steady avg (ms)</th>
+<th align="right">Steady p50 (ms)</th>
+<th align="right">Steady p95 (ms)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>torch.compile</code> Inductor</td>
+<td align="right">3110.247</td>
+<td align="right">0.195</td>
+<td align="right">0.190</td>
+<td align="right">0.213</td>
+</tr>
+</tbody></table>
+<h2>Main Takeaways</h2>
+<ul>
+<li>One line of PyTorch can become multiple GPU kernels in eager mode.</li>
+<li>Eager execution is flexible, but repeated HBM traffic and kernel launches can be expensive.</li>
+<li>Graph capture gives the compiler visibility across operations.</li>
+<li>Operator fusion can reduce intermediate tensor materialization, global memory movement, and kernel launch overhead.</li>
+<li>Compilation benefits are workload-dependent; graph capture alone does not guarantee faster execution.</li>
+<li>Graph breaks, dynamic-shape guards, Python-side control flow, and <code>.item()</code> can prevent useful fusion or trigger recompilation.</li>
+<li>Guards and caching are essential for reusing compiled graphs, but guard failures can cause recompilation.</li>
+<li>Inspecting generated code and profiler traces is essential for explaining compiler behavior, not just measuring latency.</li>
+</ul>
+<h2>Skills Demonstrated</h2>
+<ul>
+<li>ML compiler/runtime analysis.</li>
+<li>PyTorch 2.x compiler workflow.</li>
+<li>TorchDynamo and FX graph inspection.</li>
+<li>AOTAutograd and forward/backward graph reasoning.</li>
+<li>TorchInductor generated-code analysis.</li>
+<li>Triton code generation.</li>
+<li>GPU profiling and performance debugging.</li>
+<li>Benchmark design for cold-start and steady-state latency.</li>
+<li>Operator fusion and memory-traffic reasoning.</li>
+<li>Explaining compiler behavior from both frontend graph capture and backend GPU execution.</li>
+</ul>
+<h2>Experiment Result Analysis</h2>
+<p>The results show that <code>torch.compile</code> is not a universal speed button. For GEMM-heavy MLP workloads, eager PyTorch already reaches optimized cuBLAS-backed paths, so compilation added overhead and produced steady-state slowdowns from 0.50x to 0.88x. Clean graph capture alone was not enough; the workload also needed optimization opportunities that Inductor could exploit beyond existing library dispatch.</p>
+<p>Elementwise workloads behaved differently. Small and medium elementwise cases did not benefit much, but the large <code>N=16,777,216</code> case achieved a 3.32x speedup. This is the clearest evidence for fusion: when many simple operations would otherwise materialize intermediate tensors and repeatedly touch HBM, compiled fusion can reduce memory traffic and kernel launch overhead.</p>
+<p>Attention results showed a more nuanced story. Compiling naive attention improved the long-sequence case, reaching about 1.95x speedup at <code>N=1024</code>, but SDPA eager was still faster than both naive eager and naive compiled paths. This suggests the best systems decision is not always to compile arbitrary Python code; often it is better to route the workload to a specialized primitive that already uses an optimized backend.</p>
+<p>The graph-break experiments explain why compiler-friendly code matters. <code>.item()</code> moves tensor data into Python control flow, causing a graph break and making <code>fullgraph=True</code> fail. Rewriting the branch with <code>torch.where</code> kept the computation in tensor form and restored graph capture. This is important for production ML systems because small Python-side decisions can determine whether the compiler sees one optimizable region or several fragmented regions.</p>
+<p>Dynamic-shape experiments show the trade-off between specialization and reuse. Static compilation produced expensive recompiles when shape assumptions changed, while dynamic compilation paid higher initial cost but reused compiled paths across later shape changes. For serving systems with variable batch size or sequence length, dynamic-shape behavior and guard failures can dominate real-world latency.</p>
+<p>The mini compiler results validate the compiler pipeline at a smaller scale. The custom FX-to-IR-to-Triton path produced numerically correct output and achieved speedups on large tensors, but it was slower for small tensors. This mirrors the broader lesson from <code>torch.compile</code>: compiler-generated kernels pay off when the workload is large enough and memory traffic or fusion opportunities dominate overhead.</p>
+<p><a href="../index.html">Back to Home</a></p>
+</main></body></html>
