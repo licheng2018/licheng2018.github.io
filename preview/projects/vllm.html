@@ -1,12 +1,33 @@
 <!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>vLLM Scheduler Analysis and Chunked Prefill Optimization</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>vLLM Scheduler Analysis and Chunked Prefill Optimization</h1>
+<h2>Contents</h2>
+<ul>
+<li><a href="#section-project-goal">Project Goal</a></li>
+<li><a href="#section-experimental-setup">Experimental Setup</a></li>
+<li><a href="#section-implementation-milestones">Implementation Milestones</a></li>
+<li><a href="#section-request-lifecycle-and-scheduler-analysis">Request Lifecycle and Scheduler Analysis</a></li>
+<li><a href="#section-understanding-vllm-scheduler-internals">Understanding vLLM Scheduler Internals</a></li>
+<li><a href="#section-kv-cache-pagedattention-and-block-allocation">KV Cache, PagedAttention, and Block Allocation</a></li>
+<li><a href="#section-scheduler-instrumentation">Scheduler_Instrumentation</a></li>
+<li><a href="#section-baseline-benchmark">Baseline Benchmark</a></li>
+<li><a href="#section-scheduler-optimization">scheduler_optimization</a></li>
+<li><a href="#section-skills-demonstrated">Skills Demonstrated</a></li>
+</ul>
 <p>This project explores vLLM inference internals through source-code analysis, scheduler instrumentation, baseline benchmarking, and chunked prefill policy experiments. The work was carried out on a Google Colab T4, starting with small-model offline inference and server execution and progressing to scheduler modifications and correctness testing.</p>
 <p>Source repo: <a href="https://github.com/licheng2018/vllm">github</a></p>
+<p><a id="section-project-goal"></a></p>
 <h2>Project Goal</h2>
 <p>Connect serving performance with the internal decisions behind request scheduling and KV-cache management. The project focuses on tracing request execution, observing scheduler state at each step, and experimenting with fixed and adaptive chunked prefill policies.</p>
 <p><img src="../assets/projects/vllm/project-overview.png" alt="vLLM project overview: request tracing, scheduler and KV-cache analysis, instrumentation, benchmarking, and chunked prefill policy experiments"></p>
 <p><img src="../assets/projects/vllm/request-lifecycle.png" alt="vLLM offline request lifecycle from LLM.generate() through input processing, EngineCore, WAITING and RUNNING states, scheduler output, ModelRunner, and output processing"></p>
 <p><img src="../assets/projects/vllm/scheduler-internals.png" alt="vLLM 0.29.0 scheduler internals: token and input budgets, running requests, waiting admission, KV allocation and preemption, SchedulerOutput, and execution feedback"></p>
 <p><img src="../assets/projects/vllm/kv-cache-memory-management.png" alt="vLLM KV cache memory management: contiguous allocation fragmentation, paged block mapping, token and memory budgets, request growth, and preemption"></p>
+<p><img src="../assets/projects/vllm/scheduler-instrumentation.png" alt="vLLM scheduler instrumentation: trace event insertion points, request state snapshots, prefill flags, JSONL fields, and consistency checks"></p>
+<p><img src="../assets/projects/vllm/scheduler-trace-results.png" alt="vLLM scheduler trace fields and results: event records, per-request prefill and decode counts, admission behavior, KV capacity, and consistency checks"></p>
+<p><img src="../assets/projects/vllm/baseline-benchmark.png" alt="vLLM baseline benchmark: offline and streaming measurement methods, token budget comparison, latency and throughput results, and measurement limitations"></p>
+<p><img src="../assets/projects/vllm/adaptive-prefill-scheduling.png" alt="vLLM adaptive prefill scheduling: RUNNING and WAITING insertion points, conditional per-request token cap, long-prompt chunking, short-request admission, and policy-decision tracing"></p>
+<p><img src="../assets/projects/vllm/adaptive-prefill-comparison.png" alt="Adaptive prefill versus baseline: recorded scheduling behavior, conditional-cap validation, and baseline performance measurements with adaptive performance still unmeasured"></p>
+<p><strong>Figure correction:</strong> In panel 2, the first-prefill row for each workload should show <code>reason = first_prefill</code>, not <code>contention</code>. The final 404-token chunk correctly shows <code>reason = contention</code>. The trace comparison uses separate runs with different global token budgets; adaptive TTFT, TPOT, and throughput have not yet been measured.</p>
+<p><a id="section-experimental-setup"></a></p>
 <h2>Experimental Setup</h2>
 <table>
 <thead>
@@ -40,6 +61,7 @@
 <td>Fixed and adaptive chunked prefill</td>
 </tr>
 </tbody></table>
+<p><a id="section-implementation-milestones"></a></p>
 <h2>Implementation Milestones</h2>
 <table>
 <thead>
@@ -85,6 +107,7 @@
 <td>Scheduler patch and correctness test.</td>
 </tr>
 </tbody></table>
+<p><a id="section-request-lifecycle-and-scheduler-analysis"></a></p>
 <h2>Request Lifecycle and Scheduler Analysis</h2>
 <p>This walkthrough follows the code and saved outputs in <a href="https://github.com/licheng2018/vllm/blob/main/vLLM%20Setup%2C%20Request%20Inspection%2C%20and%20Baseline%20Benchmarking/vLLM_Foundation.ipynb">vLLM_Foundation.ipynb</a>. The recorded environment is <strong>vLLM 0.29.0</strong>, PyTorch <strong>2.13.0+cu130</strong>, Python <strong>3.13.15</strong>, and a <strong>Tesla T4 with 14.56 GiB VRAM</strong>. The offline example uses <strong>Qwen/Qwen2.5-1.5B-Instruct</strong>, FP16, <code>max_model_len=4096</code>, and <code>gpu_memory_utilization=0.70</code>.</p>
 <p>The investigation combines an actual inference run with inspection of the installed Python source. <strong>Source verified</strong> below means that the notebook printed the relevant implementation. <strong>Runtime observed</strong> means that a saved execution output shows the behavior. These are different levels of evidence: printing a branch establishes what the code does when reached, but does not establish that a particular request took that branch.</p>
@@ -406,6 +429,7 @@ print(inspect.getsource(KernelClass))
 <td>No. Most evidence is saved source inspection; per-request event timing and actual scheduled-batch payloads remain for instrumentation.</td>
 </tr>
 </tbody></table>
+<p><a id="section-understanding-vllm-scheduler-internals"></a></p>
 <h2>Understanding vLLM Scheduler Internals</h2>
 <p>This section follows the scheduler-internals chapter of <a href="https://github.com/licheng2018/vllm/blob/main/vLLM%20Setup%2C%20Request%20Inspection%2C%20and%20Baseline%20Benchmarking/vLLM_Foundation.ipynb">vLLM_Foundation.ipynb</a>, in its original investigation order. The lifecycle walkthrough above follows a request across components; here the focus is how <strong>one scheduling round distributes limited token and KV-cache resources across requests</strong>.</p>
 <p>The evidence comes from saved inspection outputs for <strong>vLLM 0.29.0</strong>, primarily notebook cells <strong>55–65</strong>. Cell numbers count all physical notebook cells from one. The snippets below reproduce the inspection approach or selected source excerpts. They are not standalone scheduler implementations. These cells inspect source rather than record live request-state transitions.</p>
@@ -626,6 +650,7 @@ assert num_new_tokens &gt; 0
 <td>Performance gains from fixed or adaptive chunk-policy changes.</td>
 </tr>
 </tbody></table>
+<p><a id="section-kv-cache-pagedattention-and-block-allocation"></a></p>
 <h2>KV Cache, PagedAttention, and Block Allocation</h2>
 <p>This section follows the corresponding chapter of <a href="https://github.com/licheng2018/vllm/blob/main/vLLM%20Setup%2C%20Request%20Inspection%2C%20and%20Baseline%20Benchmarking/vLLM_Foundation.ipynb">vLLM_Foundation.ipynb</a>. After understanding how the scheduler chooses token work, the next question is <strong>how that work obtains KV storage and how the worker locates it</strong>.</p>
 <p>The investigation uses the saved <strong>vLLM 0.29.0</strong> source-inspection outputs in notebook cells <strong>68–91</strong>, counting all physical cells from one. Each step below preserves the notebook&#39;s progression, including searches that initially reached a wrapper or abstract method. Code excerpts are shortened for readability. The evidence establishes implementation paths; these cells do not measure live block allocation, cache-hit rates, fragmentation, or GPU memory traffic.</p>
@@ -882,35 +907,753 @@ slot = physical_block * 16 + token_position % 16
 <td>Actual preemption frequency, recomputation cost, and latency impact.</td>
 </tr>
 </tbody></table>
-<h2>Scheduler Instrumentation and Benchmarking</h2>
-<p>Scheduler instrumentation records per-step state in <code>scheduler_trace.jsonl</code>, supported by a trace script. The baseline benchmark covers four measurement areas:</p>
+<p><a id="section-scheduler-instrumentation"></a></p>
+<h2>Scheduler_Instrumentation</h2>
+<p>The earlier chapters inspect how requests should move through the code. This experiment makes those decisions observable at runtime by adding event logging to the installed scheduler. The implementation and saved results are in <a href="https://github.com/licheng2018/vllm/blob/main/Scheduler_Instrumentation.ipynb">Scheduler_Instrumentation.ipynb</a>.</p>
+<p>The walkthrough below follows the notebook&#39;s progression from locating insertion points to validating the final mixed-workload trace. Cell references use one-based physical positions, including Markdown cells. Snippets show the essential implementation rather than a complete portable patch. The recorded results belong to this experiment; they are not measurements of tracing overhead or scheduling-policy speedup.</p>
+<h3>1. Locate the scheduler decisions worth recording</h3>
+<p><strong>Question.</strong> Where can logging capture the state before a round, individual allocations, preemption, and the final allocation summary?</p>
+<p><strong>What I did.</strong> Notebook cells 9–16 inspect <code>Scheduler.schedule()</code>, search for allocation and budget assignments, examine the surrounding request-scheduling branches, and locate the free-block API and constructor.</p>
+<pre><code class="language-python">import inspect
+import vllm.v1.core.sched.scheduler as scheduler_module
+
+Scheduler = scheduler_module.Scheduler
+source = inspect.getsource(Scheduler.schedule)
+keywords = [
+    &quot;token_budget&quot;, &quot;num_new_tokens&quot;, &quot;num_scheduled_tokens&quot;,
+    &quot;allocate_slots&quot;, &quot;_preempt_request&quot;, &quot;self.running.append&quot;,
+    &quot;request.status&quot;, &quot;SchedulerOutput&quot;,
+]
+for i, line in enumerate(source.splitlines()):
+    if any(keyword in line for keyword in keywords):
+        print(f&quot;{i:4d}: {line}&quot;)
+</code></pre>
+<p><strong>What I found.</strong> The assignment <code>num_scheduled_tokens[request_id] = num_new_tokens</code> appears in both the running-request path and the waiting/resumed admission path. Both need instrumentation. KV capacity is available through <code>self.kv_cache_manager.block_pool.get_num_free_blocks()</code>. Constructor inspection exposes <code>current_step</code>, which can join events from the same round without introducing a separate counter.</p>
+<p><strong>Was it verified?</strong> Yes, by saved source excerpts. This identifies insertion points; it does not yet produce runtime scheduler events. The printed indices are offsets in inspected source strings, not stable repository line numbers.</p>
+<h3>2. Build and test an optional JSONL trace writer</h3>
+<p><strong>Question.</strong> What is the smallest record format that supports per-round and per-request analysis?</p>
+<p><strong>What I did.</strong> Notebook cells 17–19 implement <code>_trace_event()</code> and test it with a dummy scheduler:</p>
+<pre><code class="language-python">def _trace_event(self, event: str, **fields) -&gt; None:
+    if not self._trace_enabled:
+        return
+    record = {&quot;step&quot;: self.current_step, &quot;event&quot;: event, **fields}
+    with open(self._trace_path, &quot;a&quot;) as f:
+        f.write(json.dumps(record) + &quot;\n&quot;)
+</code></pre>
+<p><strong>What I found.</strong> The saved test file contains one JSON object with <code>step=1</code>, <code>event=&quot;test_event&quot;</code>, a request ID, 128 new tokens, and a budget change from 2,048 to 1,920. This verifies serialization and append behavior using synthetic data; it is not an inference result.</p>
+<p>Two environment variables control the actual scheduler patch: <code>VLLM_SCHEDULER_TRACE=1</code> enables logging, and <code>VLLM_SCHEDULER_TRACE_PATH</code> selects the destination. Disabled tracing returns immediately. Enabled tracing opens and appends to a file for each event, so its synchronous I/O cost must not be assumed negligible.</p>
+<h3>3. Integrate the helper into the installed scheduler</h3>
+<p><strong>Question.</strong> How can the experiment modify the implementation while checking that the expected source structure is present?</p>
+<p><strong>What I did.</strong> Notebook cells 21–25 locate the installed <code>scheduler.py</code>, create a <code>.py.backup</code> if absent, insert imports and constructor configuration, and add the helper before <code>schedule()</code>.</p>
+<pre><code class="language-python">self._trace_enabled = (
+    os.environ.get(&quot;VLLM_SCHEDULER_TRACE&quot;, &quot;0&quot;) == &quot;1&quot;
+)
+self._trace_path = os.environ.get(
+    &quot;VLLM_SCHEDULER_TRACE_PATH&quot;, &quot;/tmp/vllm_scheduler_trace.jsonl&quot;
+)
+</code></pre>
+<p>The patch checks for expected source anchors and existing trace markers before performing text replacement. After editing, it verifies that the imports, configuration fields, and helper exist, then runs:</p>
+<pre><code class="language-python">py_compile.compile(str(scheduler_path), doraise=True)
+</code></pre>
+<p><strong>Was it verified?</strong> The saved output reports all five presence checks as true and <code>scheduler.py syntax OK</code>. This verifies patch presence and Python syntax, not semantic equivalence or compatibility with other vLLM releases. The anchor strings target the inspected installed version. Later runs launch a fresh Python process so that the edited module is loaded rather than relying on a previously imported notebook class.</p>
+<h3>4. Record schedule_start after budget initialization</h3>
+<p><strong>Question.</strong> What resources and queue sizes are visible when a scheduling round begins?</p>
+<p><strong>What I did.</strong> Notebook cells 27–35 insert and test <code>schedule_start</code> after token/input budget initialization and the paused-scheduler adjustment.</p>
+<pre><code class="language-python">self._trace_event(
+    &quot;schedule_start&quot;,
+    token_budget_before=token_budget,
+    input_budget_before=input_budget,
+    free_kv_blocks=self.kv_cache_manager.block_pool.get_num_free_blocks(),
+    waiting_size=len(self.waiting),
+    running_size=len(self.running),
+)
+</code></pre>
+<p><strong>What I found.</strong> The placement preserves the effective starting budget, including the possibility that a paused scheduler has reduced it to zero. The record captures pool capacity and the two named containers at that point. <code>waiting_size</code> counts <code>self.waiting</code>; it should not automatically be interpreted as every request in specialized waiting states or other queues.</p>
+<p><strong>Was it verified?</strong> The notebook clears the old trace, enables the environment variables, launches an inference script, and reads the resulting JSONL file. Unlike the dummy helper test, these events come from actual scheduler execution.</p>
+<h3>5. Record allocations in both request_scheduled paths</h3>
+<p><strong>Question.</strong> Which request received work, how many tokens were assigned, and what state did it come from?</p>
+<p><strong>What I did.</strong> Notebook cells 36–48 add <code>request_scheduled</code> first to the running branch, then to waiting/preempted admission. Both events are emitted after the token and input budgets are deducted.</p>
 <table>
 <thead>
 <tr>
-<th>Measurement</th>
-<th>Focus</th>
+<th>Field</th>
+<th>Meaning at the observation point</th>
 </tr>
 </thead>
 <tbody><tr>
-<td>Time to first token (TTFT)</td>
-<td>Initial response latency.</td>
+<td><code>request_id</code>, <code>source_state</code></td>
+<td>Request identity and the scheduling path&#39;s origin state.</td>
 </tr>
 <tr>
-<td>Time per output token (TPOT)</td>
-<td>Token generation latency after the first token.</td>
+<td><code>num_prompt_tokens</code>, <code>num_tokens</code></td>
+<td>Prompt length and current non-speculative token sequence length.</td>
 </tr>
 <tr>
-<td>Throughput</td>
-<td>Serving output rate.</td>
+<td><code>num_computed_tokens_before</code></td>
+<td>Progress used for this allocation, before the later scheduling-progress update.</td>
 </tr>
 <tr>
-<td>KV-cache pressure</td>
-<td>Cache usage and memory constraints during serving.</td>
+<td><code>num_new_tokens</code></td>
+<td>Token work assigned by this allocation.</td>
+</tr>
+<tr>
+<td><code>is_prefill</code>, <code>is_prefill_chunk</code></td>
+<td>Phase classification derived from prompt progress.</td>
+</tr>
+<tr>
+<td><code>token_budget_before</code>, <code>token_budget_after</code></td>
+<td>Remaining budget immediately around this allocation.</td>
+</tr>
+<tr>
+<td><code>free_kv_blocks</code>, <code>waiting_size</code>, <code>running_size</code></td>
+<td>Pool and queue snapshots at the insertion point.</td>
 </tr>
 </tbody></table>
-<p>The benchmark work produced a baseline table and plots. Numerical results and trace artifacts are not included on this page yet.</p>
-<h2>Chunked Prefill Policy Experiments</h2>
-<p>The scheduler modification work started with a fixed chunked prefill policy and then extended to an adaptive policy. The outputs include a scheduler patch and a correctness test. This page documents the implementation scope; measured performance gains and correctness-test results are not yet reported here.</p>
+<p>The running path records <code>source_state=&quot;RUNNING&quot;</code> and uses <code>request.num_computed_tokens</code>. The admission path saves <code>request.status.name</code> before changing it and uses the local <code>num_computed_tokens</code>, which can incorporate matched-prefix progress.</p>
+<pre><code class="language-python">source_state = request.status.name
+# Record allocation and deduct budgets, then emit the event.
+self._trace_event(
+    &quot;request_scheduled&quot;,
+    request_id=request_id,
+    source_state=source_state,
+    num_computed_tokens_before=num_computed_tokens,
+    num_new_tokens=num_new_tokens,
+    token_budget_before=token_budget + num_new_tokens,
+    token_budget_after=token_budget,
+    # Additional fields omitted here.
+)
+request.status = RequestStatus.RUNNING
+request.num_computed_tokens = num_computed_tokens
+</code></pre>
+<p><strong>What I found.</strong> Budget-before can be reconstructed by adding the assigned token count back to the already-decremented budget. For admission, the request has already been appended to the running list when this event is logged, but its enum has not yet been changed to RUNNING. Consequently, <code>source_state=&quot;WAITING&quot;</code> and a running-list count that includes this request are compatible snapshots, not a contradiction.</p>
+<p><strong>Was it verified?</strong> Runtime outputs show events from both paths. The final trace contains admission events labeled WAITING and subsequent allocations labeled RUNNING. These fields describe scheduling decisions, not GPU completion or user-visible token delivery.</p>
+<h3>6. Record schedule_end and the optional preemption branch</h3>
+<p><strong>Question.</strong> Can the analyzer reconcile the round&#39;s final allocation summary and count preemptions?</p>
+<p><strong>What I did.</strong> Notebook cells 49–60 add two further events. <code>schedule_end</code> is inserted after the scheduling assertions, while <code>request_preempted</code> is inserted after <code>_preempt_request(...)</code> and after appending the victim to <code>preempted_reqs</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Recorded information</th>
+<th>Timing meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>schedule_end</code></td>
+<td>Total scheduled tokens, scheduled-request count, remaining token/input budgets, free blocks, queue sizes, and <code>preempted_count</code>.</td>
+<td>Allocation-summary point, before later output construction and progress accounting.</td>
+</tr>
+<tr>
+<td><code>request_preempted</code></td>
+<td>Victim ID, prompt/current/computed token counts, cumulative <code>num_preemptions</code>, free blocks, and queue sizes.</td>
+<td>State after the preemption helper has executed.</td>
+</tr>
+</tbody></table>
+<p><strong>What I found.</strong> The preemption snapshot cannot be assumed to preserve the victim&#39;s pre-reset computed-token count because it is emitted after the helper. Similarly, despite its name, <code>schedule_end</code> is neither the literal end of the Python method nor a signal that GPU execution finished.</p>
+<p><strong>Was it verified?</strong> The patch passes syntax checks and later traces contain start/end pairs. The final experiment records <strong>zero preemptions</strong>. It therefore checks zero-count agreement but does not exercise the preemption event&#39;s runtime payload or validate recovery under memory pressure.</p>
+<h3>7. Use a mixed workload, then reduce the budget to expose chunking</h3>
+<p><strong>Question.</strong> Does enabling chunked prefill make chunking visible for this particular input, and when do short requests enter?</p>
+<p><strong>What I did.</strong> Notebook cells 61–73 first run one long prompt and two short prompts with the default budget, inspect the resolved configuration, and then rerun with:</p>
+<pre><code class="language-python">max_num_batched_tokens=512,
+enable_chunked_prefill=True,
+</code></pre>
+<p>The prompts are a repeated explanation request plus “What is a GPU warp?” and “What is KV cache?”. The run uses <code>temperature=0.0</code> and <code>max_tokens=32</code>. Traces are cleared between runs so the analyzer does not combine different executions.</p>
+<p><strong>What I found.</strong> The initial trace uses an 8,192-token budget. A 2,452-token prompt fits within that budget; enabling chunked prefill does not by itself force it to span multiple rounds. Reducing the budget to 512 makes partial prefill decisions visible. The final recorded prompt lengths are <strong>2,452</strong>, <strong>6</strong>, and <strong>5</strong> tokens.</p>
+<p><strong>Was it verified?</strong> Yes, the saved scheduling events show the smaller budget being consumed. This is an intervention to reveal scheduling behavior, not a controlled latency or throughput comparison. No performance improvement is established by the budget change.</p>
+<h3>8. Correct the meaning of is_prefill_chunk</h3>
+<p><strong>Question.</strong> Does the event flag describe the allocation being recorded, or an earlier state of the request?</p>
+<p><strong>What I did.</strong> The initial running-path patch logs <code>request.is_prefill_chunk</code>. Notebook cells 74–78 replace it with a calculation from the current allocation, syntax-check the patch, clear the trace, and rerun.</p>
+<pre><code class="language-python">is_prefill = computed_before &lt; prompt_tokens
+is_prefill_chunk = computed_before + num_new_tokens &lt; prompt_tokens
+</code></pre>
+<p>Here the names are shortened for explanation; the patch uses <code>request.num_computed_tokens</code>, <code>request.num_prompt_tokens</code>, and <code>num_new_tokens</code>. The waiting branch already computes its flag from local progress.</p>
+<p><strong>What I found.</strong> For the last prefill allocation of the long request, progress is 2,048 and the allocation is 404:</p>
+<pre><code class="language-text">is_prefill:        2048 &lt; 2452          → True
+is_prefill_chunk:  2048 + 404 &lt; 2452    → False
+</code></pre>
+<p>This event is still prefill, but no prompt work remains after its allocation. Reusing the earlier stored flag can incorrectly mark the final chunk as partial because <code>_update_after_schedule()</code> updates request progress later.</p>
+<p><strong>Was it verified?</strong> Yes. The corrected saved trace marks the first four 512-token allocations as partial chunks and the final 404-token allocation as prefill with <code>chunk=False</code>. The analyzer then counts five prefill events but only four partial-chunk events for this request.</p>
+<h3>9. Analyze the final trace at request and round level</h3>
+<p><strong>Question.</strong> What does the complete recorded execution show beyond individual printed rows?</p>
+<p><strong>What I did.</strong> Notebook cells 80–84 load JSONL records, split them by event type, aggregate by request, calculate round-level totals, and print a compact timeline.</p>
+<pre><code class="language-python">records = [json.loads(line) for line in trace_file.read_text().splitlines()]
+scheduled_events = [r for r in records if r[&quot;event&quot;] == &quot;request_scheduled&quot;]
+</code></pre>
+<p><strong>Observed event counts.</strong> The final trace contains <strong>176 records</strong>: 38 <code>schedule_start</code>, 100 <code>request_scheduled</code>, zero <code>request_preempted</code>, and 38 <code>schedule_end</code> events. These are 38 scheduler rounds, not 38 generated tokens or 38 requests.</p>
+<table>
+<thead>
+<tr>
+<th>Request alias</th>
+<th align="right">Prompt tokens</th>
+<th align="right">Prefill events</th>
+<th align="right">Partial chunks</th>
+<th align="right">Decode events</th>
+<th align="right">Decode tokens scheduled</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td align="right">2,452</td>
+<td align="right">5</td>
+<td align="right">4</td>
+<td align="right">31</td>
+<td align="right">31</td>
+</tr>
+<tr>
+<td>B</td>
+<td align="right">6</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">31</td>
+<td align="right">31</td>
+</tr>
+<tr>
+<td>C</td>
+<td align="right">5</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">31</td>
+<td align="right">31</td>
+</tr>
+</tbody></table>
+<p>A/B/C are display aliases for the saved request IDs. Summing the recorded work gives <strong>2,463 prefill tokens + 93 decode tokens = 2,556 scheduled tokens</strong>. Free KV-block snapshots range from <strong>15,128 to 15,290</strong>. These are block-pool counts, not byte measurements or a normalized memory-pressure percentage.</p>
+<p><strong>Observed admission sequence.</strong> In rounds 1–4, A receives 512 tokens per round, exhausting the budget. In round 5, A receives its remaining 404 tokens; B then receives 6 and C receives 5, leaving 97. Rounds 6–36 schedule one decode token per request per round. The trace demonstrates that the two short requests enter when capacity is available; it does not demonstrate automatic short-request priority.</p>
+<p>The 31 decode scheduling events should not be equated with the total number of generated output tokens. The final prefill pass can produce the first output token, while later scheduled decode work produces subsequent tokens. Start/end events also count rounds without a <code>request_scheduled</code> entry, explaining why the total round count must be distinguished from the timeline of token-bearing allocations.</p>
+<h3>10. Validate the trace with consistency checks</h3>
+<p><strong>Question.</strong> Are the logged totals internally consistent, and which properties were actually checked?</p>
+<p><strong>What I did.</strong> Notebook cell 85 groups events by request and indexes start/end records by step. It checks five properties:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Implemented comparison</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Prefill coverage</td>
+<td>Sum of prefill <code>num_new_tokens</code> equals that request&#39;s prompt length.</td>
+</tr>
+<tr>
+<td>Round budget accounting</td>
+<td>Start budget minus end budget equals <code>schedule_end.total_num_scheduled_tokens</code>; missing end events are flagged.</td>
+</tr>
+<tr>
+<td>Budget bounds</td>
+<td>Every recorded <code>token_budget_after</code> is non-negative.</td>
+</tr>
+<tr>
+<td>Progress ordering</td>
+<td><code>num_computed_tokens_before</code> does not decrease across a request&#39;s events in this run.</td>
+</tr>
+<tr>
+<td>Preemption agreement</td>
+<td>Number of <code>request_preempted</code> events equals the sum of <code>schedule_end.preempted_count</code>.</td>
+</tr>
+</tbody></table>
+<p><strong>Was it verified?</strong> The saved output reports <strong>PASS — all checks succeeded</strong>. This validates the implemented checks against the final trace. It is not a general proof of scheduler correctness: prefix-cache hits can change prefill-work totals, and recomputation or speculative rollback can invalidate a blanket monotonic-progress assumption. The zero-preemption run does not test those cases.</p>
+<h3>Experiment outcome and measurement limits</h3>
+<p>This experiment closes the gap between reading the scheduler source and observing real decisions. It produces a JSONL record of allocation origins, token work, phase classification, budgets, queue sizes, and KV capacity, and it demonstrates chunked prefill followed by short-request admission and shared decode.</p>
+<table>
+<thead>
+<tr>
+<th>Supported by the saved run</th>
+<th>Not measured or exercised</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Four event types implemented; three types emitted in the final run.</td>
+<td>Runtime preemption payloads and recovery behavior.</td>
+</tr>
+<tr>
+<td>Long prompt split into <code>512 × 4 + 404</code>.</td>
+<td>A latency or throughput benefit from changing the budget.</td>
+</tr>
+<tr>
+<td>Short requests admitted in round 5.</td>
+<td>General fairness or short-request priority guarantees.</td>
+</tr>
+<tr>
+<td>Trace totals and five consistency checks pass.</td>
+<td>Full numerical model correctness or every scheduler branch.</td>
+</tr>
+<tr>
+<td>Free-block and queue snapshots at explicit insertion points.</td>
+<td>GPU memory bytes, GPU completion timing, TTFT, or TPOT.</td>
+</tr>
+</tbody></table>
+<p>The helper records no token-arrival timestamps, and synchronous trace-file writes introduce overhead that this notebook does not quantify. These records are an observability artifact for explaining scheduler behavior, not a replacement for a serving benchmark.</p>
+<p><a id="section-baseline-benchmark"></a></p>
+<h2>Baseline Benchmark</h2>
+<p>This experiment establishes a reference before changing scheduler policy. <a href="https://github.com/licheng2018/vllm/blob/main/baseline_benchmark.ipynb">baseline_benchmark.ipynb</a> compares the default <strong>8,192-token</strong> batch budget with a <strong>512-token</strong> budget using two measurement paths: offline batch completion and streaming request latency.</p>
+<p>The walkthrough follows the notebook&#39;s progression, including the addition of warm-up and the later decision to disable prefix caching. Cell references count all notebook cells from one. Tables report saved results, not a new rerun. Code excerpts are shortened to show the measurement logic. The model and hardware are the project&#39;s Qwen2.5-1.5B-Instruct FP16 / Colab T4 setup; the focus here is workload design, measurement, and interpretation.</p>
+<h3>1. Define workloads that stress different parts of inference</h3>
+<p><strong>Question.</strong> How can a small baseline distinguish prefill-heavy, decode-heavy, and mixed work?</p>
+<p><strong>What I did.</strong> Notebook cells 12–18 define four workloads, each containing four prompts, and tokenize every prompt with the model tokenizer. Character lengths are printed first, then replaced with actual token counts for interpreting compute and KV demand.</p>
+<pre><code class="language-python">token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+prompt_tokens = len(token_ids)
+</code></pre>
+<p><strong>Observed workload sizes.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th>Prompt tokens per request</th>
+<th align="right">Maximum output tokens per request</th>
+<th>Intended emphasis</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>short_short</code></td>
+<td>6, 5, 6, 5</td>
+<td align="right">32</td>
+<td>Small requests and scheduling overhead.</td>
+</tr>
+<tr>
+<td><code>long_short</code></td>
+<td>2,102, 2,102, 2,402, 2,402</td>
+<td align="right">32</td>
+<td>Prompt processing / prefill.</td>
+</tr>
+<tr>
+<td><code>short_long</code></td>
+<td>8, 6, 7, 10</td>
+<td align="right">256</td>
+<td>Sustained decode.</td>
+</tr>
+<tr>
+<td><code>mixed</code></td>
+<td>2,102, 6, 1,402, 5</td>
+<td align="right">64</td>
+<td>Interactions between different prompt lengths.</td>
+</tr>
+</tbody></table>
+<p><strong>Was it verified?</strong> Yes, the notebook saves token counts and a workload summary table. The output limits are caps, not guaranteed generated lengths; later throughput calculations use actual returned token IDs. These synthetic workloads probe specific behaviors rather than represent a production traffic distribution.</p>
+<h3>2. Measure offline batch latency and output-token throughput</h3>
+<p><strong>Question.</strong> How long does a whole batch take, and how much generated output does it produce per second?</p>
+<p><strong>What I did.</strong> Notebook cells 20–24 build a helper around <code>LLM.generate()</code>, use greedy generation via <code>temperature=0.0</code>, and record three repeats per workload. The core measurement is:</p>
+<pre><code class="language-python">start_time = time.perf_counter()
+outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
+latency = time.perf_counter() - start_time
+output_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
+output_tokens_per_s = output_tokens / latency
+</code></pre>
+<p>Each row also records the workload name, repeat number, request count, and total prompt-token count.</p>
+<p><strong>What I found.</strong> The smoke test completes four short requests with 128 output tokens. The timer covers the complete offline call, so its latency is batch completion time. Its output throughput includes time spent processing prompts as well as decoding; it is not a pure decode-kernel rate.</p>
+<p><strong>Was it verified?</strong> Yes, actual per-run rows are saved. This API returns completed results and does not expose first-token arrival, so it cannot directly measure TTFT or per-request streaming TPOT. A batch&#39;s latency must also not be presented as the average latency of its individual requests.</p>
+<h3>3. Inspect early-run variation and add warm-up</h3>
+<p><strong>Question.</strong> Are initial measurements representative of repeated execution?</p>
+<p><strong>What I did.</strong> Notebook cells 26–29 inspect raw rows, revise the helper to perform one untimed warm-up per workload, and rerun three measured repeats.</p>
+<pre><code class="language-python">for _ in range(warmup_runs):
+    llm.generate(prompts, sampling_params, use_tqdm=False)
+# Timed repeats follow this loop.
+</code></pre>
+<p><strong>What I found.</strong> Before this revision, <code>long_short</code> took <strong>10.0789 s</strong> in its first recorded repeat, followed by <strong>0.7727 s</strong> and <strong>0.8130 s</strong>. That difference motivated separating warm-up from measured runs. The output alone does not isolate which portion came from compilation, cache reuse, or other transient behavior.</p>
+<p><strong>Was it verified?</strong> The revised helper and its new results are saved. Warm-up improves the procedure, but it is not a complete control: repeated prompts can also reuse prefix KV when caching is enabled. The offline construction does not explicitly disable prefix caching, so these measurements must retain that limitation.</p>
+<h3>4. Compare the default and 512-token offline configurations</h3>
+<p><strong>Question.</strong> Does reducing the batch token budget affect every workload in the same way?</p>
+<p><strong>What I did.</strong> Notebook cells 33–39 create the controlled engine with <code>max_num_batched_tokens=512</code> and <code>enable_chunked_prefill=True</code>, print its resolved settings, repeat the workloads, and aggregate latency and throughput. The printed controlled configuration has <code>max_num_scheduled_tokens=None</code>; the earlier default initialization log reports a batch budget of 8,192.</p>
+<p><strong>Saved offline results.</strong> Each configuration uses one warm-up and three measured repeats per workload.</p>
+<table>
+<thead>
+<tr>
+<th>Workload</th>
+<th>Mean batch latency: 8,192 → 512</th>
+<th align="right">Latency change</th>
+<th>Mean output tok/s: 8,192 → 512</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>long_short</code></td>
+<td>0.8760 → 0.7746 s</td>
+<td align="right">−11.57%</td>
+<td>147.34 → 165.25</td>
+</tr>
+<tr>
+<td><code>mixed</code></td>
+<td>1.2903 → 1.3011 s</td>
+<td align="right">+0.84%</td>
+<td>198.40 → 196.77</td>
+</tr>
+<tr>
+<td><code>short_long</code></td>
+<td>4.0087 → 3.9774 s</td>
+<td align="right">−0.78%</td>
+<td>229.78 → 230.31</td>
+</tr>
+<tr>
+<td><code>short_short</code></td>
+<td>0.6071 → 0.8248 s</td>
+<td align="right">+35.85%</td>
+<td>214.08 → 194.45</td>
+</tr>
+</tbody></table>
+<p><strong>What I found.</strong> The effect varies by workload. The controlled <code>short_short</code> measurements include a <strong>1.4376 s</strong> run between approximately 0.5020 s and 0.5348 s, which strongly affects its mean. That is a reason to examine individual rows rather than conclude that the smaller budget always slows short requests.</p>
+<p><strong>Was it verified?</strong> These values are in the saved comparison tables. Throughput is the mean of per-run output-token rates, not necessarily total tokens divided by the sum of all run times. Small sample counts, repeated prompts, and runtime variation prevent treating the table as a universal performance ranking.</p>
+<h3>5. Add streaming measurements with explicit timing boundaries</h3>
+<p><strong>Question.</strong> When does the client first receive generated text, and how fast does the remaining output arrive?</p>
+<p><strong>What I did.</strong> Notebook cells 41–55 introduce the OpenAI-compatible server and a streaming request helper. The later concurrent helper in cell 57 sends <code>stream=True</code> requests to <code>/v1/completions</code>, buffers incoming bytes, parses newline-delimited SSE events, and accumulates non-empty generated text.</p>
+<pre><code class="language-python">start_time = time.perf_counter()
+# POST request; parse SSE events.
+if text:
+    if first_token_time is None:
+        first_token_time = time.perf_counter()
+    generated_text += text
+# Record finish_time on [DONE], or when the response ends.
+</code></pre>
+<p>The helper retokenizes the completed generated text and computes:</p>
+<pre><code class="language-python">output_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
+ttft = first_token_time - start_time
+latency = finish_time - start_time
+tpot = (latency - ttft) / (output_tokens - 1)
+</code></pre>
+<p>The actual code guards the TPOT calculation for missing first text or fewer than two output tokens.</p>
+<p><strong>What I found.</strong> These are client-side estimates. TTFT measures first <strong>non-empty text</strong>, which may not coincide exactly with the model&#39;s first token. TPOT is an aggregate derived from elapsed time and retokenized output length, not an average of individually timestamped model-token gaps. A network chunk and an SSE text event are not guaranteed to represent one token.</p>
+<p><strong>Was it verified?</strong> The notebook saves text-stream timing results, including a single-request smoke measurement. Unlike offline timing, this method captures first-response behavior, but it includes HTTP, buffering, parsing, and completion overhead. It is not a direct GPU timing measurement.</p>
+<h3>6. Create a delayed short request behind a long request</h3>
+<p><strong>Question.</strong> How responsive is serving when a short prompt arrives shortly after long-prompt processing begins?</p>
+<p><strong>What I did.</strong> Notebook cells 58–62 create an asynchronous two-request workload. The long prompt repeats “Explain GPU memory hierarchy in detail.” 300 times; the short prompt asks “What is a GPU warp?”. The long request allows 64 output tokens and the short one allows 32.</p>
+<pre><code class="language-python">long_task = asyncio.create_task(run_streaming_request_async(...))
+await asyncio.sleep(0.05)
+short_task = asyncio.create_task(run_streaming_request_async(...))
+long_result, short_result = await asyncio.gather(long_task, short_task)
+</code></pre>
+<p><strong>What I found.</strong> This creates a nominal <strong>50 ms client-side arrival offset</strong> and overlapping requests, rather than submitting one fixed offline batch. Each request&#39;s timer starts inside its own helper; the short request&#39;s latency does not include the deliberate delay before it was submitted.</p>
+<p><strong>Was it verified?</strong> Saved rows contain request-level TTFT, TPOT, total latency, output-token count, and non-empty stream-event count. The initial five repeated trials have substantially smaller TTFT than the first exploratory pair. That pattern raises a cache/warm-up concern; it does not by itself identify the underlying cause or prove a particular scheduling order.</p>
+<h3>7. Disable prefix caching for the final streaming comparison</h3>
+<p><strong>Question.</strong> Can repeated-prefix reuse obscure the cost the scheduler-budget experiment is intended to expose?</p>
+<p><strong>What I did.</strong> Notebook cells 63–76 introduce an explicit cache control and launch server configurations for both budgets with:</p>
+<pre><code class="language-text">--max-num-batched-tokens 8192   # use 512 for the second configuration
+--enable-chunked-prefill
+--no-enable-prefix-caching
+</code></pre>
+<p>The notebook reruns the same mixed-arrival helper five times for each configuration. It then filters out repeat 1 before computing the final summaries:</p>
+<pre><code class="language-python">steady_df = results_df[results_df[&quot;repeat&quot;] &gt; 1].copy()
+</code></pre>
+<p><strong>What I found.</strong> The retained groups each contain <strong>four samples per request and budget</strong>. With prefix caching explicitly disabled, the final results are a separate comparison from the earlier exploratory streaming and offline tables. For example, the default no-prefix-cache run records short-request TTFT of about 2.522 s in repeat 1, followed by values around 1.057–1.150 s in repeats 2–5.</p>
+<p><strong>Was it verified?</strong> Both server command definitions contain the intended flags, and the saved filtered summaries use repeats 2–5. The record is not a completely clean isolation audit: an intermediate GPU snapshot shows two residual EngineCore processes, and the 8,192-server startup-inspection cell saves no log text. Cleanup and a zero-process GPU snapshot appear before the later 512-server run. The tables therefore establish saved observations under the intended configurations, while a stronger causal comparison would also verify the active server, logs, and GPU process isolation for every run.</p>
+<h3>8. Aggregate mean and percentile metrics and compare results</h3>
+<p><strong>Question.</strong> Which part of response latency changed most in the recorded streaming comparison?</p>
+<p><strong>What I did.</strong> Notebook cells 69 and 76–79 group retained rows by request, compute mean/p50/p95 values using NumPy percentiles, merge the summaries, and calculate relative change:</p>
+<pre><code class="language-python">change_pct = (metric_512 - metric_8192) / metric_8192 * 100
+</code></pre>
+<p><strong>Saved short-request results.</strong> Negative changes indicate lower measured times.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th align="right">8,192-token budget</th>
+<th align="right">512-token budget</th>
+<th align="right">Change</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mean TTFT</td>
+<td align="right">1.094532 s</td>
+<td align="right">1.014900 s</td>
+<td align="right">−7.28%</td>
+</tr>
+<tr>
+<td>p95 TTFT</td>
+<td align="right">1.143091 s</td>
+<td align="right">1.021918 s</td>
+<td align="right">−10.60%</td>
+</tr>
+<tr>
+<td>Mean TPOT</td>
+<td align="right">19.596 ms</td>
+<td align="right">19.464 ms</td>
+<td align="right">−0.67%</td>
+</tr>
+<tr>
+<td>Mean end-to-end latency</td>
+<td align="right">1.702005 s</td>
+<td align="right">1.618280 s</td>
+<td align="right">−4.92%</td>
+</tr>
+</tbody></table>
+<p><strong>Saved long-request results.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th align="right">8,192-token budget</th>
+<th align="right">512-token budget</th>
+<th align="right">Change</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mean TTFT</td>
+<td align="right">1.102729 s</td>
+<td align="right">1.065880 s</td>
+<td align="right">−3.34%</td>
+</tr>
+<tr>
+<td>p95 TTFT</td>
+<td align="right">1.144393 s</td>
+<td align="right">1.073108 s</td>
+<td align="right">−6.23%</td>
+</tr>
+<tr>
+<td>Mean TPOT</td>
+<td align="right">22.723 ms</td>
+<td align="right">22.345 ms</td>
+<td align="right">−1.67%</td>
+</tr>
+<tr>
+<td>Mean end-to-end latency</td>
+<td align="right">2.534309 s</td>
+<td align="right">2.473601 s</td>
+<td align="right">−2.40%</td>
+</tr>
+</tbody></table>
+<p><strong>What I found.</strong> In these saved rows, the larger relative difference is in first-response latency, especially for the short request; average decode pacing changes much less. That is consistent with the motivation to study prefill and admission responsiveness, but timing alone does not prove which internal scheduler decisions caused the difference.</p>
+<p><strong>Was it verified?</strong> The merged tables reproduce these comparisons. With only four retained samples per group, p95 is an interpolated description of a very small sample, not a robust estimate of production tail latency. The notebook does not report confidence intervals or demonstrate statistical significance.</p>
+<h3>9. Define what this baseline can support next</h3>
+<p><strong>Question.</strong> What should remain fixed when evaluating a later scheduling-policy patch?</p>
+<p><strong>What the experiment provides.</strong> It defines token-validated workload families, an offline measurement helper, an asynchronous streaming helper, an explicit delayed-arrival scenario, and saved reference results. Together these provide a repeatable starting procedure for comparing future changes.</p>
+<table>
+<thead>
+<tr>
+<th>Supported by this notebook</th>
+<th>Additional evidence needed for stronger conclusions</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Offline batch latency and actual output-token throughput across four workloads.</td>
+<td>More repetitions, controlled cache state, and verified process isolation.</td>
+</tr>
+<tr>
+<td>Client-side first-text latency and estimated TPOT for overlapping requests.</td>
+<td>Per-token timestamps or server-side metrics for more precise timing.</td>
+</tr>
+<tr>
+<td>Lower saved short-request TTFT at the 512-token budget.</td>
+<td>A controlled rerun to isolate scheduler-budget causality and quantify uncertainty.</td>
+</tr>
+<tr>
+<td>Workload-dependent results and an identifiable offline outlier.</td>
+<td>Broader concurrency, arrival-rate, and prompt-length sweeps.</td>
+</tr>
+<tr>
+<td>A baseline for later policy experiments.</td>
+<td>Matched runtime traces connecting budget decisions, KV allocation, and measured latency.</td>
+</tr>
+</tbody></table>
+<p>This notebook does not provide a KV-pressure or preemption benchmark alongside the final timing tables. Those observations belong to separate instrumentation and stress tests. It also compares configuration values, not a newly implemented adaptive scheduler policy. Future comparisons should preserve the workload and timing definitions, verify cache and process state, and measure tracing overhead separately if instrumentation is enabled.</p>
+<p><a id="section-scheduler-optimization"></a></p>
+<h2>scheduler_optimization</h2>
+<p>This experiment moves from changing the global token budget to modifying the scheduler&#39;s per-request prefill allocation. The implementation and saved validation traces are in <a href="https://github.com/licheng2018/vllm/blob/main/scheduler_optimization.ipynb">scheduler_optimization.ipynb</a>. The recorded engine is vLLM 0.29.0. Cell references below count all notebook cells, including Markdown, starting at 1; code excerpts are shortened for readability.</p>
+<p>The implemented policy keeps <code>max_num_batched_tokens=8192</code> and conditionally applies a 512-token prefill cap. The notebook demonstrates policy activation, release, and decode pass-through. It does not yet measure the adaptive patch&#39;s TTFT, TPOT, or throughput.</p>
+<h3>1. Turn the baseline observation into a specific scheduling hypothesis</h3>
+<p><strong>Question.</strong> Can a long prefill be limited without reducing the entire scheduler&#39;s capacity to 512 tokens?</p>
+<p><strong>What I did.</strong> The policy-design section distinguishes a global budget from a per-request cap. A global budget limits the sum of work scheduled in an iteration. A per-request cap limits one request&#39;s contribution, potentially leaving capacity for other eligible requests.</p>
+<pre><code class="language-python"># Global scheduling capacity in the validation workloads
+max_num_batched_tokens = 8192
+
+# Additional limit applied conditionally by the custom helper
+prefill_cap = 512
+</code></pre>
+<p><strong>What changed.</strong> The notebook describes a fixed cap as the starting idea, but the inserted helper already uses conditional activation: cap the first prefill chunk, and cap subsequent chunks when the helper detects contention. The threshold stays fixed at 512; “adaptive” refers to whether the cap is active, not automatic tuning of its value.</p>
+<p><strong>Was it verified?</strong> The implementation and validation configurations show these two separate limits. The baseline motivated the policy; its timing improvements cannot be attributed to this new patch.</p>
+<h3>2. Locate and back up the installed scheduler before patching</h3>
+<p><strong>Question.</strong> Which implementation will the experiment actually execute?</p>
+<p><strong>What I did.</strong> Cells 12–14 locate the installed <code>Scheduler</code> class, preserve a backup, and insert a helper immediately before <code>schedule()</code> using a source-text marker.</p>
+<pre><code class="language-python">from vllm.v1.core.sched.scheduler import Scheduler
+scheduler_path = Path(inspect.getfile(Scheduler))
+backup_path = scheduler_path.with_suffix(&quot;.py.adaptive_prefill_backup&quot;)
+if not backup_path.exists():
+    backup_path.write_text(scheduler_path.read_text())
+</code></pre>
+<p><strong>What I found.</strong> The saved path is <code>/usr/local/lib/python3.13/dist-packages/vllm/v1/core/sched/scheduler.py</code>. This modifies the installed package used by the subsequent test processes. The backup is only written if it does not already exist.</p>
+<p><strong>Was it verified?</strong> The output confirms the path and backup creation. This is a version-specific source patch: it depends on matching the installed source text, rather than using a stable scheduler extension API.</p>
+<h3>3. Implement the prefill and contention decisions</h3>
+<p><strong>Question.</strong> Exactly when should the helper reduce <code>num_new_tokens</code>?</p>
+<p><strong>Implementation.</strong> The helper receives the request, its effective computed-token count, and the scheduler&#39;s candidate allocation.</p>
+<pre><code class="language-python">is_prefill = num_computed_tokens &lt; request.num_prompt_tokens
+if not is_prefill:
+    return num_new_tokens
+
+is_first_prefill_chunk = num_computed_tokens == 0
+has_waiting_requests = bool(self.waiting or self.skipped_waiting)
+has_decode_competition = any(
+    other is not request
+    and other.num_computed_tokens &gt;= other.num_prompt_tokens
+    for other in self.running
+)
+has_contention = has_waiting_requests or has_decode_competition
+
+if is_first_prefill_chunk or has_contention:
+    num_new_tokens = min(num_new_tokens, 512)
+return num_new_tokens
+</code></pre>
+<p><strong>What each condition means.</strong> Decode allocations pass through unchanged. A request with zero computed tokens gets an initial cap even without detected competition. Later prefill chunks remain capped while a waiting queue is nonempty or another running request has reached its prompt boundary. Without either trigger, the helper returns the original candidate allocation, still subject to the scheduler&#39;s existing limits.</p>
+<p><strong>Important implementation detail.</strong> Contention is a snapshot of queue and request state at the helper call. The waiting check is simply queue nonemptiness; it does not explicitly exclude the current request. The running check excludes the current request and detects decode competition, not every possible form of resource contention. Also, “first chunk” means <code>num_computed_tokens == 0</code>; a request with cached progress need not satisfy it.</p>
+<p><strong>Was it verified?</strong> The saved traces exercise first-prefill capping, contention capping, no-contention release, and decode pass-through. They do not establish a general fairness guarantee or KV-pressure-aware adaptation.</p>
+<h3>4. Apply the same policy to RUNNING and WAITING paths</h3>
+<p><strong>Question.</strong> How does the policy cover both admitted requests and requests being considered for admission?</p>
+<p><strong>What I did.</strong> Cells 16 and 18 insert the helper after <code>_reserve_prefill_lookahead(...)</code> and before the existing zero-token check in both paths.</p>
+<pre><code class="language-python"># RUNNING path
+num_new_tokens = self._apply_adaptive_prefill_cap(
+    request, request.num_computed_tokens, num_new_tokens
+)
+
+# WAITING path
+num_new_tokens = self._apply_adaptive_prefill_cap(
+    request, num_computed_tokens, num_new_tokens
+)
+</code></pre>
+<p><strong>Why the arguments differ.</strong> RUNNING uses the request&#39;s stored progress. WAITING uses the local effective progress calculated by that path, which can include cached progress. Both paths therefore evaluate the cap using the progress appropriate to their scheduling context.</p>
+<p><strong>What remains downstream.</strong> The patch reduces a candidate token count; it does not itself admit a request or guarantee execution. Existing zero-token checks, KV allocation, budget accounting, and scheduler constraints still apply. It does not intentionally change queue ordering, preemption policy, sampling, or model execution.</p>
+<p><strong>Was it verified?</strong> The source checks report one helper definition and two call sites. Runtime traces then show both initial prefill work and subsequent running-request work passing through the policy.</p>
+<h3>5. Check patch structure and Python syntax</h3>
+<p><strong>Question.</strong> Was the helper inserted in both intended places without making the file invalid Python?</p>
+<p><strong>What I did.</strong> Cells 19–20 compile the modified file and count the helper and its calls. Cell 25 repeats syntax validation after adding tracing.</p>
+<pre><code class="language-python">py_compile.compile(str(scheduler_path), doraise=True)
+source.count(&quot;def _apply_adaptive_prefill_cap&quot;)       # saved output: 1
+source.count(&quot;self._apply_adaptive_prefill_cap(&quot;)    # saved output: 2
+</code></pre>
+<p><strong>Was it verified?</strong> The saved outputs report <code>scheduler.py syntax OK</code>, one definition, and two calls. These checks validate syntax and insertion structure; they do not prove scheduling correctness, output equivalence, or performance.</p>
+<h3>6. Record the inputs, decision, and reason for every helper call</h3>
+<p><strong>Question.</strong> How can the experiment distinguish a policy trigger from an allocation that was actually reduced?</p>
+<p><strong>What I did.</strong> Cells 22–24 add an environment-controlled JSONL tracer and replace the helper with an instrumented version. Each record contains <code>step=self.current_step</code>, <code>event=&quot;policy_decision&quot;</code>, and the decision fields.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>What it explains</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>request_id</code>, <code>phase</code></td>
+<td>Which request was evaluated, and whether it was in prefill or decode.</td>
+</tr>
+<tr>
+<td><code>num_computed_tokens</code></td>
+<td>Progress used by this invocation of the helper.</td>
+</tr>
+<tr>
+<td><code>original_tokens</code>, <code>final_tokens</code></td>
+<td>Candidate allocation before and after the custom cap.</td>
+</tr>
+<tr>
+<td><code>capped</code></td>
+<td>Whether the helper actually reduced the candidate count.</td>
+</tr>
+<tr>
+<td><code>reason</code></td>
+<td><code>decode</code>, <code>first_prefill</code>, <code>contention</code>, or <code>none</code>.</td>
+</tr>
+<tr>
+<td><code>has_waiting_requests</code>, <code>has_decode_competition</code></td>
+<td>The two contention signals, included for prefill records.</td>
+</tr>
+</tbody></table>
+<pre><code class="language-python">capped = num_new_tokens &lt; original_num_new_tokens
+# Prefill reason priority:
+reason = &quot;none&quot;
+if is_first_prefill_chunk:
+    reason = &quot;first_prefill&quot;
+elif has_contention:
+    reason = &quot;contention&quot;
+</code></pre>
+<p><strong>What I found.</strong> A trigger can be active without changing the count. For example, a 404-token remainder under contention remains 404, so <code>reason=&quot;contention&quot;</code> and <code>capped=False</code> are consistent. Likewise, a short initial prompt can have <code>reason=&quot;first_prefill&quot;</code> without being shortened.</p>
+<p><strong>Was it verified?</strong> The saved records contain these combinations. The tracer is enabled with <code>VLLM_ADAPTIVE_TRACE=1</code> and writes to <code>VLLM_ADAPTIVE_TRACE_PATH</code>. It opens and appends to the file synchronously for each event; tracing overhead is not measured. These records describe helper decisions before downstream scheduling completes, rather than GPU execution timestamps or final allocation-success events.</p>
+<h3>7. Validate a long request competing with two short requests</h3>
+<p><strong>Question.</strong> Does the cap remain active while other requests need service, and do short prompts retain their full small allocations?</p>
+<p><strong>What I did.</strong> Cells 26–29 launch a fresh test process with chunked prefill enabled, an 8192-token global budget, and three prompts: a repeated long prompt, “What is a GPU warp?”, and “What is KV cache?”. Sampling uses temperature 0 and a maximum of 32 output tokens. The saved token counts are 2452, 6, and 5.</p>
+<p><strong>Observed policy decisions.</strong> The notebook prints the first 30 trace records, including the following prefill progression:</p>
+<table>
+<thead>
+<tr>
+<th>Scheduler step</th>
+<th>Long request: original → final</th>
+<th>Reason / actually capped</th>
+<th>Short-request decisions shown</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>2452 → 512</td>
+<td><code>first_prefill</code> / true</td>
+<td>No short-request record shown.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1940 → 512</td>
+<td><code>contention</code> / true</td>
+<td>Prefill 6 → 6 and 5 → 5.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>1428 → 512</td>
+<td><code>contention</code> / true</td>
+<td>Each decode allocation is 1 → 1.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>916 → 512</td>
+<td><code>contention</code> / true</td>
+<td>Each decode allocation is 1 → 1.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>404 → 404</td>
+<td><code>contention</code> / false</td>
+<td>Each decode allocation is 1 → 1.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>1 → 1</td>
+<td><code>decode</code> / false</td>
+<td>Each decode allocation is 1 → 1.</td>
+</tr>
+</tbody></table>
+<p><strong>What I found.</strong> The long prompt&#39;s prefill is split into <code>512 + 512 + 512 + 512 + 404</code>. Short prefills appear in step 2, and their decode decisions appear from step 3 while the long request is still processing its prompt. A nominally active cap does not reduce their 6- and 5-token allocations.</p>
+<p><strong>Was it verified?</strong> These values are present in the saved trace, and the output reports 32 generated tokens for each request. The displayed trace does not establish why the short requests have no step-1 record. It also does not measure their waiting time or prove that every arriving short request will enter in step 2.</p>
+<h3>8. Validate that the cap releases for a single long request</h3>
+<p><strong>Question.</strong> Does the adaptive policy avoid forcing every long prompt into 512-token chunks when competition disappears?</p>
+<p><strong>What I did.</strong> Cells 30–33 run a separate process with the same long prompt alone, clear the trace file, and inspect the first 30 records.</p>
+<table>
+<thead>
+<tr>
+<th>Scheduler step</th>
+<th align="right">Computed tokens before decision</th>
+<th>Original → final</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td align="right">0</td>
+<td>2452 → 512</td>
+<td><code>first_prefill</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td align="right">512</td>
+<td>1940 → 1940</td>
+<td><code>none</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td align="right">2452</td>
+<td>1 → 1</td>
+<td><code>decode</code></td>
+</tr>
+</tbody></table>
+<p><strong>What I found.</strong> The first chunk is capped, but the remaining 1940 prompt tokens pass through in the next decision. The observed prefill sequence is <code>512 + 1940</code>, followed by unchanged one-token decode allocations. This distinguishes conditional activation from an always-on per-request cap.</p>
+<p><strong>Was it verified?</strong> The saved trace shows the release and reports 32 output tokens. This demonstrates the intended branch behavior in this workload; it does not establish lower latency than the unmodified scheduler.</p>
+<h3>9. Compare the evidence with the earlier baseline</h3>
+<p><strong>Question.</strong> What can the current results tell us about the benefit of the patch?</p>
+<p><strong>Behavior comparison.</strong> The earlier instrumentation run with a global budget of 512 admitted the short requests in round 5. In the adaptive run, with a global budget of 8192 and a conditional per-request cap, short-prefill decisions appear in step 2. These are separate runs with different global budgets and different trace insertion points. The contrast illustrates available scheduling capacity, but it does not isolate the patch&#39;s effect or translate iteration counts into elapsed-time gains.</p>
+<p><strong>Performance comparison.</strong> The baseline notebook measures the unmodified scheduler under global budgets of 8192 and 512. Its short-request mean TTFT values are 1.094532 s and 1.014900 s respectively. Neither is a measurement of this adaptive policy. The optimization notebook contains no matched adaptive TTFT, TPOT, throughput, or tail-latency benchmark.</p>
+<p><strong>Was it verified?</strong> The recorded evidence supports conditional capping, release without detected contention, small-prefill pass-through, decode pass-through, and completion of both test workloads. It does not support a numerical speedup claim. Generating 32 tokens also does not establish token-for-token equivalence with unmodified vLLM.</p>
+<h3>10. Define the remaining evaluation</h3>
+<p><strong>Question.</strong> What would turn policy validation into a defensible optimization result?</p>
+<p><strong>Next comparison.</strong> Run the unmodified and patched schedulers with the same 8192-token global budget, model, prompts, arrival timing, cache settings, and output limits. Disable tracing for timing measurements or quantify its overhead separately. Reuse the baseline&#39;s offline and streaming measurement definitions, with enough repetitions to characterize variability.</p>
+<p>The proposed cap sweep—no custom cap, 1024, 512, and 256—remains future evaluation in this notebook. Relevant outcomes include short- and long-request TTFT, TPOT, throughput, and scheduler overhead. Smaller chunks can create more scheduling opportunities but also require more iterations; the current validation does not determine the best trade-off.</p>
+<p><strong>Current deliverables.</strong> A backed-up installed-source patch, one shared helper called from both scheduling paths, syntax and insertion checks, policy-decision tracing, and saved mixed-request and single-request validation outputs.</p>
+<p><a id="section-skills-demonstrated"></a></p>
 <h2>Skills Demonstrated</h2>
 <ul>
 <li>vLLM environment setup and offline/server inference execution.</li>
