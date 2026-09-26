@@ -25,7 +25,7 @@ Connect serving performance with the internal decisions behind request schedulin
 
 ![vLLM project overview: request tracing, scheduler and KV-cache analysis, instrumentation, benchmarking, and chunked prefill policy experiments](../assets/projects/vllm/project-overview.png)
 
-![vLLM offline request lifecycle from LLM.generate() through input processing, EngineCore, WAITING and RUNNING states, scheduler output, ModelRunner, and output processing](../assets/projects/vllm/request-lifecycle.png)
+![vLLM request lifecycle: request submission, _run_engine and LLMEngine.step frontend collection, core scheduling and model execution, and in-process versus multiprocess output handling](../assets/projects/vllm/request-lifecycle-v2.png)
 
 ![vLLM 0.29.0 scheduler internals: token and input budgets, running requests, waiting admission, KV allocation and preemption, SchedulerOutput, and execution feedback](../assets/projects/vllm/scheduler-internals.png)
 
