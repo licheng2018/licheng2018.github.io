@@ -41,6 +41,10 @@ Connect serving performance with the internal decisions behind request schedulin
 
 ![vLLM baseline benchmark: offline and streaming measurement methods, token budget comparison, latency and throughput results, and measurement limitations](../assets/projects/vllm/baseline-benchmark.png)
 
+![vLLM baseline results comparing input and output lengths, token budgets 8192 and 512, offline latency and throughput, and streaming TTFT and TPOT](../assets/projects/vllm/baseline-detailed-results.png)
+
+![Online streaming baseline results: staggered long and short requests, budgets 8192 and 512, TTFT, TPOT, and total latency](../assets/projects/vllm/online-streaming-baseline-results.png)
+
 ![vLLM adaptive prefill scheduling: RUNNING and WAITING insertion points, conditional per-request token cap, long-prompt chunking, short-request admission, and policy-decision tracing](../assets/projects/vllm/adaptive-prefill-scheduling.png)
 
 ![Adaptive prefill versus baseline: recorded scheduling behavior, conditional-cap validation, and baseline performance measurements with adaptive performance still unmeasured](../assets/projects/vllm/adaptive-prefill-comparison.png)
@@ -417,7 +421,6 @@ for output in outputs:
 | What does ModelRunner consume? | Per-iteration `SchedulerOutput` data used to update cached request state, the batch, and KV block mappings. |
 | Was every transition observed live? | No. Most evidence is saved source inspection; per-request event timing and actual scheduled-batch payloads remain for instrumentation. |
 
-
 <a id="section-understanding-vllm-scheduler-internals"></a>
 
 ## Understanding vLLM Scheduler Internals
@@ -664,7 +667,6 @@ After the round is scheduled, progress accounting advances; execution and output
 | Successful admission and allocation-failure branches. | Whether the baseline caused preemption, and its frequency. |
 | Scheduling-time progress updates and output reconciliation. | A timestamped sequence matching scheduling decisions to GPU completion. |
 | Chunk threshold and chunked-prefill admission control. | Performance gains from fixed or adaptive chunk-policy changes. |
-
 
 <a id="section-kv-cache-pagedattention-and-block-allocation"></a>
 
@@ -930,7 +932,6 @@ Prefix-cache lookup can reuse existing computed blocks along this path. Completi
 | Block-ID propagation and token-to-slot computation. | Concrete GPU slot mappings and attention memory-access measurements. |
 | The scheduling link between KV capacity and admission/preemption. | Actual preemption frequency, recomputation cost, and latency impact. |
 
-
 <a id="section-scheduler-instrumentation"></a>
 
 ## Scheduler_Instrumentation
@@ -1178,7 +1179,6 @@ This experiment closes the gap between reading the scheduler source and observin
 
 The helper records no token-arrival timestamps, and synchronous trace-file writes introduce overhead that this notebook does not quantify. These records are an observability artifact for explaining scheduler behavior, not a replacement for a serving benchmark.
 
-
 <a id="section-baseline-benchmark"></a>
 
 ## Baseline Benchmark
@@ -1382,7 +1382,6 @@ change_pct = (metric_512 - metric_8192) / metric_8192 * 100
 
 This notebook does not provide a KV-pressure or preemption benchmark alongside the final timing tables. Those observations belong to separate instrumentation and stress tests. It also compares configuration values, not a newly implemented adaptive scheduler policy. Future comparisons should preserve the workload and timing definitions, verify cache and process state, and measure tracing overhead separately if instrumentation is enabled.
 
-
 <a id="section-scheduler-optimization"></a>
 
 ## scheduler_optimization
@@ -1581,7 +1580,6 @@ elif has_contention:
 The proposed cap sweep—no custom cap, 1024, 512, and 256—remains future evaluation in this notebook. Relevant outcomes include short- and long-request TTFT, TPOT, throughput, and scheduler overhead. Smaller chunks can create more scheduling opportunities but also require more iterations; the current validation does not determine the best trade-off.
 
 **Current deliverables.** A backed-up installed-source patch, one shared helper called from both scheduling paths, syntax and insertion checks, policy-decision tracing, and saved mixed-request and single-request validation outputs.
-
 
 <a id="section-skills-demonstrated"></a>
 
