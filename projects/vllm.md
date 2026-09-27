@@ -25,11 +25,15 @@ Connect serving performance with the internal decisions behind request schedulin
 
 ![vLLM project overview: request tracing, scheduler and KV-cache analysis, instrumentation, benchmarking, and chunked prefill policy experiments](../assets/projects/vllm/project-overview.png)
 
+![vLLM request lifecycle swimlane overview: request submission, frontend collection, core scheduling, model execution, and output processing](../assets/projects/vllm/request-lifecycle-swimlanes.png)
+
 ![vLLM request lifecycle: request submission, _run_engine and LLMEngine.step frontend collection, core scheduling and model execution, and in-process versus multiprocess output handling](../assets/projects/vllm/request-lifecycle-v2.png)
 
 ![vLLM 0.29.0 scheduler internals: token and input budgets, running requests, waiting admission, KV allocation and preemption, SchedulerOutput, and execution feedback](../assets/projects/vllm/scheduler-internals.png)
 
 ![vLLM KV cache memory management: contiguous allocation fragmentation, paged block mapping, token and memory budgets, request growth, and preemption](../assets/projects/vllm/kv-cache-memory-management.png)
+
+![vLLM KV cache component flow: allocation, block pool, block tables, slot mapping, GPU storage, and reference release](../assets/projects/vllm/kv-cache-component-flow.png)
 
 ![vLLM scheduler instrumentation: trace event insertion points, request state snapshots, prefill flags, JSONL fields, and consistency checks](../assets/projects/vllm/scheduler-instrumentation.png)
 

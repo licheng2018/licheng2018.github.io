@@ -18,9 +18,11 @@
 <h2>Project Goal</h2>
 <p>Connect serving performance with the internal decisions behind request scheduling and KV-cache management. The project focuses on tracing request execution, observing scheduler state at each step, and experimenting with fixed and adaptive chunked prefill policies.</p>
 <p><img src="../assets/projects/vllm/project-overview.png" alt="vLLM project overview: request tracing, scheduler and KV-cache analysis, instrumentation, benchmarking, and chunked prefill policy experiments"></p>
+<p><img src="../assets/projects/vllm/request-lifecycle-swimlanes.png" alt="vLLM request lifecycle swimlane overview"></p>
 <p><img src="../assets/projects/vllm/request-lifecycle-v2.png" alt="vLLM offline request lifecycle from LLM.generate() through input processing, EngineCore, WAITING and RUNNING states, scheduler output, ModelRunner, and output processing"></p>
 <p><img src="../assets/projects/vllm/scheduler-internals.png" alt="vLLM 0.29.0 scheduler internals: token and input budgets, running requests, waiting admission, KV allocation and preemption, SchedulerOutput, and execution feedback"></p>
 <p><img src="../assets/projects/vllm/kv-cache-memory-management.png" alt="vLLM KV cache memory management: contiguous allocation fragmentation, paged block mapping, token and memory budgets, request growth, and preemption"></p>
+<p><img src="../assets/projects/vllm/kv-cache-component-flow.png" alt="vLLM KV cache component flow: allocation, block pool, block tables, slot mapping, GPU storage, and reference release"></p>
 <p><img src="../assets/projects/vllm/scheduler-instrumentation.png" alt="vLLM scheduler instrumentation: trace event insertion points, request state snapshots, prefill flags, JSONL fields, and consistency checks"></p>
 <p><img src="../assets/projects/vllm/scheduler-trace-results.png" alt="vLLM scheduler trace fields and results: event records, per-request prefill and decode counts, admission behavior, KV capacity, and consistency checks"></p>
 <p><img src="../assets/projects/vllm/baseline-benchmark.png" alt="vLLM baseline benchmark: offline and streaming measurement methods, token budget comparison, latency and throughput results, and measurement limitations"></p>
