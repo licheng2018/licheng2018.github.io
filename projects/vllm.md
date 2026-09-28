@@ -47,9 +47,8 @@ Connect serving performance with the internal decisions behind request schedulin
 
 ![vLLM adaptive prefill scheduling: RUNNING and WAITING insertion points, conditional per-request token cap, long-prompt chunking, short-request admission, and policy-decision tracing](../assets/projects/vllm/adaptive-prefill-scheduling.png)
 
-![Adaptive prefill versus baseline: recorded scheduling behavior, conditional-cap validation, and baseline performance measurements with adaptive performance still unmeasured](../assets/projects/vllm/adaptive-prefill-comparison.png)
+![Adaptive prefill versus baseline: scheduling traces, policy validation, streaming TTFT, TPOT and latency results](../assets/projects/vllm/adaptive-prefill-results-final.png)
 
-**Figure correction:** In panel 2, the first-prefill row for each workload should show `reason = first_prefill`, not `contention`. The final 404-token chunk correctly shows `reason = contention`. The trace comparison uses separate runs with different global token budgets; adaptive TTFT, TPOT, and throughput have not yet been measured.
 
 <a id="section-experimental-setup"></a>
 

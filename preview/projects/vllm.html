@@ -29,10 +29,10 @@
 <p><img src="../assets/projects/vllm/baseline-detailed-results.png" alt="vLLM baseline results comparing input and output lengths, token budgets 8192 and 512, offline latency and throughput, and streaming TTFT and TPOT"></p>
 <p><img src="../assets/projects/vllm/online-streaming-baseline-results.png" alt="Online streaming baseline results: staggered long and short requests, budgets 8192 and 512, TTFT, TPOT, and total latency"></p>
 <p><img src="../assets/projects/vllm/adaptive-prefill-scheduling.png" alt="vLLM adaptive prefill scheduling: RUNNING and WAITING insertion points, conditional per-request token cap, long-prompt chunking, short-request admission, and policy-decision tracing"></p>
-<p><img src="../assets/projects/vllm/adaptive-prefill-comparison.png" alt="Adaptive prefill versus baseline: recorded scheduling behavior, conditional-cap validation, and baseline performance measurements with adaptive performance still unmeasured"></p>
+<p><img src="../assets/projects/vllm/adaptive-prefill-results-final.png" alt="Adaptive prefill versus baseline: scheduling traces, policy validation, streaming TTFT, TPOT and latency results"></p>
 
 
-<p><strong>Figure correction:</strong> In panel 2, the first-prefill row for each workload should show <code>reason = first_prefill</code>, not <code>contention</code>. The final 404-token chunk correctly shows <code>reason = contention</code>. The trace comparison uses separate runs with different global token budgets; adaptive TTFT, TPOT, and throughput have not yet been measured.</p>
+
 <p><a id="section-experimental-setup"></a></p>
 <h2>Experimental Setup</h2>
 <table>
