@@ -25,6 +25,7 @@ I work at the intersection of **machine learning systems**, **AI infrastructure*
 
 | Area | Project | What It Demonstrates | Links |
 |---|---|---|---|
+| Profiling Infrastructure | **[Distributed GPU Profiling & Performance Analysis Toolkit](projects/gpu-profiling.md)** | Built a C++20 event pipeline with bounded queues, serialization, framing, batching, and TCP agent/collector transport; measured producer blocking and queue occupancy under backpressure. | [github](https://github.com/licheng2018/Modern-GPU-Performance-Profiling-Runtime-Toolkit) |
 | ML Compiler | **[PyTorch Compiler and AI Compiler Pipeline](projects/pytorch-compiler.md)** | Benchmarked eager vs `torch.compile`, graph capture, graph breaks, TorchInductor/Triton code generation, and built a toy compiler pipeline with IR, fusion, lowering, and Triton kernels. | [github](https://github.com/licheng2018/AI-compiler) |
 | LLM Serving | **[LLM Inference Serving Benchmark](projects/llm-serving.md)** | Measured TTFT, TPOT, throughput, p95 latency, prefill/decode behavior, KV-cache pressure, and concurrency trade-offs on controlled serving workloads. | [github](https://github.com/licheng2018/serving-benchmark) |
 | LLM Inference Systems | **[vLLM Scheduler Analysis and Chunked Prefill Optimization](projects/vllm.md)** | Traced request execution, analyzed continuous batching and KV-cache management, instrumented scheduler states, benchmarked serving performance, and modified fixed and adaptive chunked prefill policies on a Colab T4. | [github](https://github.com/licheng2018/vllm) |
