@@ -38,6 +38,12 @@ The central question is how to collect, transport, reconstruct, and analyze a hi
 
 ![Backpressure and scalability: producer-consumer experiment, queue instrumentation, measured blocking, and queue capacity comparison](../assets/projects/gpu-profiling/backpressure-and-scalability.png)
 
+![Overload policy comparison: blocking, dropping newest or oldest events, surviving event IDs, and measured results](../assets/projects/gpu-profiling/overload-policy-comparison.png)
+
+![Batching and backpressure: consumer batch processing, fixed overhead amortization, throughput, and producer blocking results](../assets/projects/gpu-profiling/batching-backpressure.png)
+
+![Slow network and collector simulation: downstream delay, TCP backpressure propagation, measured producer waits, and throughput results](../assets/projects/gpu-profiling/slow-network-collector.png)
+
 ## System Architecture
 
 ```text
