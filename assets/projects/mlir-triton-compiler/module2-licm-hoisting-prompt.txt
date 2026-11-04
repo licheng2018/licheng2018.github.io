@@ -1,0 +1,14 @@
+Generated using built-in image_gen; reference: module2-cse-reuse.png.
+
+Use case: scientific-educational. Create a landscape English compiler engineering infographic titled "LICM: Compute Once, Reuse Across Iterations", subtitle "Module 2 — Loop-Invariant Code Motion in Triton GEMM". Match supplied STYLE reference: white background, dark navy section header bars, cyan numbered badges, pale blue rounded process/code cards, thin blue borders, teal arrows and mint success strips, highly legible professional engineering report.
+Top half two equal side-by-side panels, 1 "Before — Invariants Inside the Loop", 2 "After — Hoisted Before the Loop". Left large outlined loop box labelled "K reduction: 16 iterations". Inside mint block "12 loop-invariant operations" with text "index expansion • base-pointer components • fixed masks", blue block "15 remaining selected operations" with text "K-dependent index/address/mask calculations". Beneath both a separate compute block "Tile loads + dot + accumulator update", tagged "Remain inside loop; excluded from selected-operation totals". Loop-back arrow. Bottom left evaluation badge "Selected IR evaluations: 27 × 16 = 432". Right show mint preheader block ABOVE loop "12 invariant operations — evaluated once"; arrow into loop box labelled "16 iterations" containing blue block "15 remaining selected operations" and separate same compute block with exclusion label. Arrow indicating reused invariant values feeding loop. Right badge "Selected IR evaluations: 12 + 15 × 16 = 252". Arrow between before/after panels "Hoist invariant computations". Do NOT imply loads or dot are hoisted or counted among the 27 selected operations.
+Middle panel 3 "Native LICM Pass — Operation Placement". Table columns "Operation", "Before in loop", "After in loop", "Hoisted", "Estimated evaluations avoided". Six rows EXACT:
+"tt.expand_dims | 4 | 2 | 2 | 30"
+"tt.splat | 4 | 2 | 2 | 30"
+"tt.broadcast | 8 | 4 | 4 | 60"
+"tt.addptr | 4 | 3 | 1 | 15"
+"arith.muli | 3 | 2 | 1 | 15"
+"arith.cmpi | 4 | 2 | 2 | 30"
+Total row "Selected total | 27 | 15 | 12 | 180".
+Next to table two bold metric cards "12 operations hoisted" and "180 repeated evaluations avoided". Small note "Actual placement change from before_licm.mlir / after_licm.mlir".
+Bottom panel 4 "Estimated Repeated Work". Zero-baseline horizontal bars Before 432 and After 252, lengths proportional (after 58.33% of before). Large mint badge "432 → 252 | 41.7% fewer estimated evaluations". Formula line "Saved = 12 × (16 − 1) = 180". Separate short explanation "Hoisted operations still execute once; total static operations are relocated." Small footer scope "Counts cover six selected IR operation classes per program instance. Estimates are not GPU instruction counts or measured runtime speedup." Lowest footer "Tesla T4 (SM75) • Triton 3.6.0 • M=N=K=512 • Tile 32×64×32 • 16 K-tile iterations". Keep no clutter and accurate text, include no fabricated benchmarks.

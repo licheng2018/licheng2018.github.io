@@ -1,0 +1,19 @@
+Generated using built-in image_gen; reference: module3-executable-validation.png.
+
+Create a landscape English compiler engineering infographic titled "Back to GPU: What PTX Reveals", subtitle "Module 3 — Address Progression in Real Triton GEMM Backend Code". Match supplied STYLE reference: white background, dark navy section header bars, cyan circular numbered badges, pale blue rounded code cards, thin blue outlines, teal arrows, mint takeaway strips. Clear precise professional engineering report, consistent with reference.
+Top full-width panel 1 "Connect LLVM Addressing to PTX Updates". Two aligned lanes:
+Lane A "A: advance across K" with conceptual LLVM expression "A + row_base + k × 32 FP16 elements" → step calculation "32 × 2 bytes = 64 bytes" → exact observed PTX code "add.s64 %rd10, %rd10, 64;".
+Lane B "B: advance K rows" with conceptual LLVM expression "B + (k × 32) × N + col" → step calculation "32 × 512 × 2 bytes = 32,768 bytes" → exact observed PTX code "add.s64 %rd9, %rd9, 32768;".
+Clarify "k is the K-tile index; N = 512; FP16 = 2 bytes". Distinguish conceptual source expressions from exact observed instructions with labels. Mint takeaway "Loop-carried pointer increments match the expected row-major tile progression." Do not claim exact full instruction provenance proved: small note "Step sizes are consistent with these accesses; full provenance requires def-use tracing."
+Middle left panel 2 "Observed Address Arithmetic — Static Counts". Accurate table columns "PTX opcode family" and "Matches", rows "add | 14", "mul | 1", "mad | 3", "shl | 13", "cvt | 24", "mov | 34". Small label "Counts cover all occurrences in the saved PTX, not only the reduction loop." Example snippets beneath table "mul.wide.u32", "mad.wide.u32 / mad.wide.s32", "shl.b32". Avoid fake performance graph.
+Middle right panel 3 "Memory & Loop Evidence". Table "ld | 121", "st | 9", "bra | 1", "setp | 3". Separate callout "2 predicated vector global-load instructions" with exact examples:
+"@%p1 ld.global.v4.b32 {…}, [%rd7 + 0];"
+"@%p2 ld.global.v4.b32 {…}, [%rd9 + 0];"
+Clearly label "Operand lists abbreviated". Loop branch example "@%p3 bra $L__BB0_1;". Small note "ld / st totals include memory spaces; two global loads are a subset of ld."
+Bottom full-width panel 4 "What the Evidence Supports". Three cards:
+"Pointer recurrence" text "64-byte and 32,768-byte loop-carried address updates are present in generated PTX."
+"Remaining shifts" text "13 shifts serve multiple indexing roles; their presence alone does not show that the original reduction-loop shift survived."
+"Scope" text "This is inspection of the original GPU kernel. The isolated x86-64 LSR rewrite was not applied back to Triton."
+Mint concluding strip "Connect high-level indexing to backend evidence before making optimization claims."
+Small scope footer "Static instruction matches are not dynamic execution counts, memory transactions, or a measured GPU speedup."
+Parameter footer "Tesla T4 (SM75) • Triton 3.6.0 • M=N=K=512 • Tile 32×32×32 • 16 K-tile iterations". Maintain exact numbers and readable typography.

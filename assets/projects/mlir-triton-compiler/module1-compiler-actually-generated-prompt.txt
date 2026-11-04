@@ -1,0 +1,16 @@
+Generated with built-in image_gen; style reference: module1-four-ir-stages.png.
+
+Use case: scientific-educational. Create one precise landscape English technical interview infographic titled "What the Compiler Actually Generated", subtitle "Module 1 — Tracing Triton GEMM from FP16 Inputs to PTX". Use the reference image as STYLE reference only: white background, dark navy header bars with white labels, cyan numbered circles, pale blue rounded code cards, thin blue panel outlines, teal arrows and mint result strips. Same polished self-authored engineering report aesthetic, readable large labels, no decorative imagery.
+Main top panel navy title "1  Observed compilation path", contains six connected cards across two aligned rows (three per row, arrows clearly snake left-to-right on row1 then connect to left of row2, row2 left-to-right). Cards:
+"FP16 loads" stage TTIR/TTGIR, snippets "tt.load", "A: 32 × 32, B: 32 × 64".
+"FP32 conversion" stage TTGIR, snippet "arith.extf", explanation "Both input tiles: f16 → f32".
+"Shared-memory preparation" stage TTGIR, snippets "ttg.local_alloc", "ttg.local_load", "Dot layouts: opIdx 0 / 1".
+"FP32 dot" stage TTGIR, snippet "tt.dot", text "FP32 operands + FP32 accumulator".
+"LLVM vector multiply-add" stage LLVM IR, snippet "llvm.fmuladd.v16f32", text "Loop-carried FP32 vector".
+"PTX FP32 FMA" stage PTX, snippet "fma.rn.f32", text "SIMT arithmetic path".
+The stage order must be exactly FP16 loads → FP32 conversion → shared-memory preparation → FP32 dot → LLVM vector multiply-add → PTX FMA. Do not draw an alternate observed Tensor Core path.
+Middle full-width highlight area with two large side-by-side evidence cards: navy/teal card "512" with label "static fma.rn.f32 matches"; second "0" with label "mma.sync / WMMA matches". Mint strip "Observed result: this kernel compiled to a SIMT FP32 FMA implementation."
+Lower left panel navy header "2  Cross-stage evidence", compact table columns "Stage" and "Observed evidence", rows: "TTIR | FP16 operands, FP32 result"; "TTGIR | Explicit FP32 conversion + shared-memory operand preparation"; "LLVM IR | Vector floating-point multiply-add"; "PTX | FP32 FMA instructions; no MMA / WMMA found". Keep text wrapped legibly.
+Lower right panel navy header "3  Interpretation & scope", three readable bullet points: "T4 supports FP16 Tensor Cores; this compilation did not use MMA."; "The compiler's exact selection reason remains to be investigated."; "Static matches are not dynamic instruction counts or measured speedup." Small light-blue note "Inspect generated code instead of assuming tl.dot selects Tensor Cores."
+Footer exact "Observed: Tesla T4 (SM75) • Triton 3.6.0 • M=256, N=512, K=256 • Tile=32×64×32 • 4 warps".
+Technical accuracy: do not imply FP16 inputs became FP32 outputs; final stored output is FP16 but this figure focuses on arithmetic lowering. Do not claim Tensor Cores unsupported or compiler bug. No fabricated timings or improvements. Match supplied style closely.

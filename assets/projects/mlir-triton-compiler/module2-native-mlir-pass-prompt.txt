@@ -1,0 +1,34 @@
+Generated using built-in image_gen; reference: module2-licm-hoisting.png.
+
+Create a landscape English technical interview infographic titled "Native C++ MLIR Pass: Implementation & Validation", subtitle "Module 2 — A Loadable CSE Pass for Integer Address Arithmetic". Match supplied image STYLE: white background, dark navy header bars, cyan numbered badges, pale blue rounded code cards, thin blue outlines, teal arrows, mint result strips; professional legible engineering report.
+Top full-width panel numbered 1 "Pass Implementation — Per-Block Value Reuse". Flow: "arith.muli / arith.addi / arith.subi" → "Operand-pair table lookup" → "Check attributes + result type" → "replaceAllUsesWith(canonical)" → "erase duplicate". Under lookup show "Separate tables per opcode; key = (lhs, rhs)". Branch for "No match" → "Record current result". From checks show "Mismatch → keep operation". Compact code block:
+"if (attrs_match && types_match) {"
+"  result.replaceAllUsesWith(canonical);"
+"  op.erase();"
+"}"
+Small note "Process top-level function blocks independently; ordered operands preserve subtraction order." Mint takeaway "Earlier equivalent SSA results replace duplicate computations."
+Middle left panel numbered 2 "Build & Load the Plugin". Vertical clear flow "GemmCSE.cpp" + "CMake / LLVM & MLIR 20" → "libGemmCSE.so" → "mlir-opt-20". Two registration labels "PassWrapper<..., OperationPass<func::FuncOp>>" and "mlirGetPassPluginInfo → register gemm-cse". Compact command text split lines:
+"mlir-opt-20"
+"  --load-pass-plugin=.../libGemmCSE.so"
+"  --pass-pipeline='builtin.module(func.func(gemm-cse))'"
+"  --verify-each test.mlir"
+Mint strip "Plugin build and load succeeded".
+Middle right panel numbered 3 "Address Arithmetic Test — 5 → 3". Before/after compact code (conceptual arithmetic, not complete MLIR):
+Before:
+"p0 = row × stride"
+"p1 = row × stride"
+"a0 = p0 + col"
+"a1 = p1 + col"
+"result = a0 + a1"
+After:
+"p0 = row × stride"
+"a0 = p0 + col"
+"result = a0 + a0"
+Highlight removed duplicate multiplication and addition. Small exact table "Operation | Before | After", rows "arith.muli | 2 | 1", "arith.addi | 3 | 2", "Total arithmetic | 5 | 3". Large mint badge "2 operations removed • 40% fewer arithmetic ops". Note "Small test case; separate from real GEMM TTIR 79 → 72."
+Bottom full-width panel numbered 4 "Five Regression Tests". Accurate table columns "Test", "Mul removed", "Add removed", "Sub removed", "Result". Rows:
+"gemm_address | 1 | 1 | 0 | PASS"
+"different_operands | 0 | 0 | 0 | PASS"
+"multiple_users | 1 | 0 | 0 | PASS"
+"subtraction_order | 0 | 0 | 0 | PASS"
+"duplicate_subtraction | 0 | 0 | 1 | PASS".
+Mint takeaway "5 / 5 tests passed expected-removal checks and MLIR verification." Scope footer "Focused block-local arithmetic pass; no recursive nested-region or cross-block CSE. Not integrated into Triton GEMM compilation." Secondary small note "Verification and removal counts are not numerical execution tests or measured GPU speedups." Do not invent benchmarks or imply production-general CSE. All text highly readable and counts exact.

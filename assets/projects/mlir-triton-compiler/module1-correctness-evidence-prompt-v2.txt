@@ -1,0 +1,3 @@
+Edited with built-in image_gen.
+
+Edit this infographic with one targeted change in panel 3 Numerical Validation. Replace the three-column test table with a clean TWO-COLUMN table labeled 'Test' and 'Result', with rows 'Main case | PASS' and 'Boundary case | PASS'. Below this table, add a separate compact line 'Main case max absolute error: 0.03125'. Remove the entire 'Max absolute error' table column and remove the words 'Not reported' completely. Do not show any empty or missing boundary error value or invent one. Preserve all other content, exact numerical parameters, diagram layout, blue/navy/cyan/mint styling, dimensions and typography as closely as possible. Keep the existing tolerance explanation and pass strip. Only modify the table and its immediate space.

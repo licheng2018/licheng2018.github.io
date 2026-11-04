@@ -1,0 +1,22 @@
+Generated using built-in image_gen; reference: module2-native-mlir-pass.png.
+
+Create a landscape English compiler engineering infographic titled "LLVM Loop Anatomy & Address Progression", subtitle "Module 3 — Tracing a Real Triton GEMM Reduction Loop". Match attached STYLE reference closely: white background, navy section headers, cyan numbered circular badges, thin blue rounded borders, pale blue code/process cards, teal arrows, mint takeaway strips; crisp readable professional engineering report.
+Top left panel 1 "Control Flow Graph": Entry block "%5" → Loop block "%108" → Exit block "%396" → "ret void". Loop has prominent self-loop back edge labelled "Continue: next index ≠ 16"; exit edge labelled "Exit: next index = 16". Inside loop list "PHI nodes", "Tile loads + vector multiply-add", "Index increment + comparison". Highlight "16 iterations: k = 0 … 15". Entry supplies initial values; back edge supplies updated values.
+Top right panel 2 "Two PHI Nodes — Loop-Carried State". Two code cards, label "Index PHI":
+"%indvars.iv = phi i64"
+"  [0, %5], [%indvars.iv.next, %108]"
+and label "Accumulator PHI":
+"%109 = phi <8 x float>"
+"  [zeroinitializer, %5], [%395, %108]"
+Small two-column explanation "First entry: index 0, zero accumulator" / "Back edge: updated index, updated FP32 vector". Accumulator update snippet "llvm.fmuladd.v8f32". Mint takeaway "PHI selects the incoming value for the executed predecessor edge." Do not use v16, this module is v8.
+Middle full-width panel 3 "From Induction Variable to Global-Memory Address". Horizontal dependency chain "%indvars.iv (k)" → "shl i64 k, 5" → "Element offset = 32k" → "getelementptr half" → "Global pointer". Stable base card "%invariant.gep" feeds GEP from above, labelled "Invariant base". Under chain show exact excerpt:
+"%110 = shl nuw nsw i64 %indvars.iv, 5"
+"%gep = getelementptr half, ptr addrspace(1) %invariant.gep, i64 %110"
+Explain "half = 2 bytes → byte offset = 64k". Mint result strip "Advance one K tile: +32 FP16 elements = +64 bytes".
+Bottom left panel 4 "Address Progression". Table columns "k", "Element offset", "Byte offset"; rows "0 | 0 | 0", "1 | 32 | 64", "2 | 64 | 128", "… | … | …", "15 | 480 | 960". Clearly show element offsets and byte offsets distinct, not copied output values.
+Bottom right panel 5 "Loop Update & Exit". Code:
+"%indvars.iv.next = add nuw nsw i64 %indvars.iv, 1"
+"%exitcond.not = icmp eq i64 %indvars.iv.next, 16"
+"br i1 %exitcond.not, label %396, label %108"
+Small short interpretation "Increment k → compare next index with 16 → exit or repeat". Mint takeaway "Regular address progression motivates a controlled LSR experiment." Scope note "This figure inspects generated LLVM IR; it does not show a new optimization or speedup."
+Footer exact "Tesla T4 (SM75) • Triton 3.6.0 • M=N=K=512 • Tile 32×32×32 • 4 warps". Accurate arrows, exact block labels and numerical quantities, readable code without overlap.

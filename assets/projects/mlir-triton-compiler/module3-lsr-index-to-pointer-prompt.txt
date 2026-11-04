@@ -1,0 +1,29 @@
+Generated using built-in image_gen; reference: module3-llvm-loop-anatomy.png.
+
+Create a landscape English technical compiler interview infographic titled "Loop Strength Reduction: From Index to Pointer", subtitle "Module 3 — Controlled LLVM Address-Loop Experiment". Closely match supplied style reference: white background, navy section header bars with bold white text, cyan circular numbered badges, pale blue rounded code cards, teal arrows, thin blue borders, mint result strips, highly readable polished engineering report.
+Top half two side-by-side panels:
+1 "Before — Index-Based Addressing". Conceptual simplified LLVM code:
+"%k = phi i64 [0, %entry], [%k.next, %loop]"
+"%offset = shl i64 %k, 5"
+"%ptr = getelementptr half, ptr %A, i64 %offset"
+"%value = load half, ptr %ptr"
+"%k.next = add nuw i64 %k, 1"
+Small diagram "k → k × 32 elements → base + offset → load". Highlight shift and offset-based GEP. Caption "Each iteration derives an input address from the loop index."
+2 "After — Pointer Induction (x86-64)". Exact relevant excerpt:
+"%lsr.iv2 = phi ptr [%scevgep3, %loop], [%A, %entry]"
+"%value = load half, ptr %lsr.iv2, align 2"
+"%scevgep3 = getelementptr i8, ptr %lsr.iv2, i64 64"
+Small recurrence diagram "ptr starts at A → load → ptr + 64 bytes → repeat". Caption "Loop-carried pointer advances by 32 FP16 elements." Label above both "Selected input-address excerpts; output addressing and termination omitted". Arrow between panels "LLVM loop-reduce". Mint takeaway across top panels "Original offset shift removed; pointer PHI introduced. Pointer updates still execute."
+Middle full-width panel 3 "Four-Way Pass Ablation". Intro "All runs: loop-simplify + loop-reduce; optionally add indvars". Exact table columns "Run", "Explicit target", "indvars", "Pointer PHI", "Original shift", "Original %k PHI". Rows:
+"A | None (default) | No | Absent | Retained | Retained"
+"B | None (default) | Yes | Absent | Retained | Retained"
+"C | x86-64 | No | Present | Removed | Removed"
+"D | x86-64 | Yes | Present | Removed | Removed".
+Highlight C and D rows mint; A and B pale blue. Adjacent or under table conclusion card "Explicit x86-64 target changed the observed result; indvars alone did not." Note "Observed for this example and LLVM toolchain, not a universal rule."
+Bottom panel 4 "Reproduce & Inspect". Compact command:
+"opt-20 -mtriple=x86_64-unknown-linux-gnu"
+"  -passes=loop-simplify,indvars,loop-reduce"
+"  -verify-each -S address_before.ll"
+"  -o address_x86_optimized.ll"
+Next to command three mint checks "Original %offset shift: removed", "Original index-based input GEP: removed", "Pointer PHI: present". Separate note "Structural checks establish the rewrite; executable equivalence is checked separately."
+Footer scope "Isolated x86-64 experiment derived from GEMM address progression. Not a transformed GPU GEMM or measured speedup." Parameter line "16 fixed iterations • 32 FP16 elements / 64 bytes per input step • LLVM 20". Avoid implying all integer PHIs removed: original %k PHI is removed but another integer induction variable can remain. Avoid invented timings or quantitative speedup. Precise types and counts and spacious readable layout.

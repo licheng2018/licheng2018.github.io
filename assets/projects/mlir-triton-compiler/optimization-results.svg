@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="660" viewBox="0 0 1080 660" role="img" aria-labelledby="title desc">
+<title id="title">Compiler optimization results</title>
+<desc id="desc">TTIR CSE reduces 79 operations to 72. Native arithmetic CSE reduces 5 operations to 3 in a toy test. LICM reduces estimated evaluations of selected operations from 432 to 252 over 16 iterations, including hoisted work.</desc>
+<rect width="1080" height="660" fill="#f6f8fa" rx="16"/>
+<style>text{font-family:Arial,sans-serif;fill:#24292f}.small{font-size:15px}.label{font-size:18px}.heading{font-size:21px;font-weight:bold}</style>
+<text x="36" y="42" font-size="27" font-weight="bold">Less redundant compiler work</text>
+<text x="36" y="70" class="small">Recorded IR transformations • separate workloads • no GPU timing comparison</text>
+<text x="36" y="110" class="heading">1. Triton TTIR CSE</text>
+<text x="36" y="156" class="label">Before</text>
+<rect x="120" y="134" width="604.12" height="30" rx="4" fill="#94a3b8"/>
+<text x="736.12" y="156" class="label">79</text>
+<text x="36" y="197" class="label">After</text>
+<rect x="120" y="175" width="550.59" height="30" rx="4" fill="#0969da"/>
+<text x="682.59" y="197" class="label">72</text>
+<text x="120" y="234" class="small">7 operations removed (8.9%) — real GEMM IR</text>
+<text x="36" y="280" class="heading">2. Native C++ MLIR CSE</text>
+<text x="36" y="326" class="label">Before</text>
+<rect x="120" y="304" width="650.00" height="30" rx="4" fill="#94a3b8"/>
+<text x="782.00" y="326" class="label">5</text>
+<text x="36" y="367" class="label">After</text>
+<rect x="120" y="345" width="390.00" height="30" rx="4" fill="#0969da"/>
+<text x="522.00" y="367" class="label">3</text>
+<text x="120" y="404" class="small">2 arithmetic operations removed (40.0%) — toy address test</text>
+<text x="36" y="450" class="heading">3. LICM: estimated IR evaluations</text>
+<text x="36" y="496" class="label">Before</text>
+<rect x="120" y="474" width="624.00" height="30" rx="4" fill="#94a3b8"/>
+<text x="756.00" y="496" class="label">432</text>
+<text x="36" y="537" class="label">After</text>
+<rect x="120" y="515" width="364.00" height="30" rx="4" fill="#0969da"/>
+<text x="496.00" y="537" class="label">252</text>
+<text x="120" y="574" class="small">180 fewer evaluations (41.7%) — selected operations, 16 iterations</text>
+<text x="36" y="627" class="small">LICM after = 15 × 16 loop evaluations + 12 once-only hoisted evaluations = 252.</text>
+</svg>

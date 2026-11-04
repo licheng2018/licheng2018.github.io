@@ -1,0 +1,18 @@
+Generated using built-in image_gen; reference: module1-four-ir-stages.png.
+
+Use case: scientific-educational. Create a landscape English engineering interview infographic titled "Finding Optimization Opportunities in GEMM IR", subtitle "Module 2 — From SSA Dependencies to CSE & LICM Candidates". Match supplied style reference closely: white background, dark navy rounded section header bars, cyan numbered circular badges, pale blue cards, teal arrows, thin blue borders, mint conclusion strips, dense but readable professional technical report. No decoration. Four panels: top left 1 Workload & IR, top right 2 Dependency Analysis, middle full-width 3 Optimization Opportunities, bottom full-width 4 Compiler Evidence Workflow.
+Panel 1: compact configuration card "GEMM: M=N=K=512", "Tile: 32×64×32", "FP16 inputs/output, FP32 accumulation", "16 K-tile iterations". Simplified code block:
+"row_base = row_index × stride"
+"for k in range(16):"
+"    k_offset = k × 32"
+"    a_ptr = A + row_base + k_offset"
+"    b_ptr = B + k_offset × N + col_index"
+"    acc = dot(load(A), load(B), acc)"
+Label code "Conceptual dependency sketch". Note "Loads use computed tile pointers and boundary masks." The load(A)/load(B) line if inaccurate simplify to "acc = dot(a_tile, b_tile, acc)".
+Panel 2: clear directed dependency graph in two lanes. Mint lane "Loop-invariant inputs": A/B base pointers, row/column indices, fixed strides and dimensions → index expansion / base address / fixed mask components. Blue lane "Loop-carried / K-dependent": k → k_offset → changing tile pointers and K masks → masked tile loads → dot; previous acc → dot → next acc, loop-back arrow. Add legend mint "Invariant candidate", blue "Iteration-dependent". IMPORTANT final full tile pointers and loads depend on k; only invariant pointer components are mint. Mention "Invariance propagates through SSA def-use chains."
+Panel 3 split into two columns:
+left "CSE candidates — equivalent expressions", diagram two identical "tt.expand_dims %row" expressions → one canonical SSA value feeding both users. Text "Same operation + operands + attributes + types", "Reuse an existing value".
+right "LICM candidates — invariant computations", diagram inside-loop box with invariant index/base/mask components and dependent dot, arrow moving invariant components to preheader box; dot and K-dependent memory remain inside. Text "Compute once before the loop", "Preserve effects and placement legality".
+Bottom strip within panel 3 display "Initial TTIR dependency analysis: 12 invariant candidates • 20 loop-dependent result definitions". Small note "Def-use classification: 11 potential hoists; 1 pointer calculation requires legality review." This is candidate classification, do not label as actual transformed counts.
+Panel 4 horizontal flow "Compile GEMM" → "Dump pass snapshots" → "Extract before / after" → "Compare IR & operation counts". Small code badges "MLIR_ENABLE_DUMP=gemm_kernel", "TRITON_ALWAYS_COMPILE=1". Two branches "CSE: before_cse.mlir → after_cse.mlir" and "LICM: before_licm.mlir → after_licm.mlir". Mint takeaway "Find candidates from dependencies; confirm transformations in native pass output."
+Footer "Tesla T4 (SM75) • Triton 3.6.0 • Real GEMM IR analysis". Avoid inventing speedup or claiming static dependency candidates prove safe hoisting. Technical clarity and legibility paramount; render concise labels accurately.

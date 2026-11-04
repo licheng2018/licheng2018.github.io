@@ -1,0 +1,18 @@
+Generated using built-in image_gen; reference: module2-optimization-opportunities.png.
+
+Create a landscape English technical infographic for a compiler engineering interview titled "CSE: Reuse Instead of Recompute", subtitle "Module 2 — Common Subexpression Elimination in Triton GEMM TTIR". Use attached image ONLY as style reference: white background, navy section header bars with white bold titles, cyan circular numbered badges, pale blue rounded code boxes, thin blue panel borders, teal arrows, mint success strips. Crisp readable engineering report visual, no decorations or invented speedups.
+Top half: two equally sized panels side by side, numbered 1 "Before — Repeated Expressions" and 2 "After — Reused SSA Values". Above code label "Simplified illustrative SSA; matching types and attributes". Left code:
+"%r0 = tt.make_range [0, 32)"
+"%r1 = tt.make_range [0, 32)"
+"%e0 = tt.expand_dims %row {axis=1}"
+"%e1 = tt.expand_dims %row {axis=1}"
+"user_A(%e0, %r0)"
+"user_B(%e1, %r1)"
+Color duplicate lines gently pink, original lines blue. Right code:
+"%r0 = tt.make_range [0, 32)"
+"%e0 = tt.expand_dims %row {axis=1}"
+"user_A(%e0, %r0)"
+"user_B(%e0, %r0)"
+Make clear this is conceptual syntax, not complete parsable MLIR. Large arrow between panels labelled "Replace duplicate uses". On right add a small SSA graph single "%e0" branching to user_A and user_B. Alias cards "%r1 → %r0" and "%e1 → %e0". Mint strip "Compute each equivalent expression once; reuse its SSA result."
+Middle full-width panel numbered 3 "Measured Static IR Reduction". Compact accurate table columns Operation / Before / After / Removed. Rows "tt.expand_dims | 12 | 6 | 6", "tt.make_range | 3 | 2 | 1", "Total matched operations | 79 | 72 | 7". Beside table small horizontal before/after bar chart total counts 79 and 72, zero baseline, bars proportional (72 about 91% of 79), values labelled. Large result badge "7 fewer operations • 8.9% reduction". Small text "Native CSE pass snapshots from the real GEMM compilation." Do not imply total operations are just sum of these two types. Do not claim latency benefit.
+Bottom full-width panel numbered 4 "Python Prototype → Structural Verification". Flow cards "before_cse.mlir" → "Scope-aware expression tables" → "SSA alias replacement" → "prototype_cse.mlir" → "Compare with native CSE". Under central cards text "Supported: tt.expand_dims, tt.make_range", "Match operation, operands, attributes and result types", "Ignore debug locations; track lexical loop regions". Below three mint checks "6 expand_dims + 1 make_range removed", "No stale uses of removed SSA values", "Supported operation counts match native CSE". Small footer "Structural checks validate the recorded text transformation; this prototype is not a general MLIR parser." Scope badge "Static IR simplification; GPU runtime speedup was not measured." Lowest footer "Tesla T4 (SM75) • Triton 3.6.0 • M=N=K=512 • Tile 32×64×32 • 16 K-tile iterations". Use clear hierarchy and ample spacing, preserve exact counts.

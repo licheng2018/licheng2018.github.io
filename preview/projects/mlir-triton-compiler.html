@@ -1,0 +1,414 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MLIR-Based Triton Compiler Optimization Framework | Licheng Zheng</title><style>*{box-sizing:border-box}body{margin:0;color:#24292f;background:#fff;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:44px auto;padding:0 32px 64px}h1{font-size:34px}h1,h2{line-height:1.3;border-bottom:1px solid #d8dee4;padding-bottom:12px;margin-top:32px}h2{font-size:24px}h3{font-size:20px}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}table{border-collapse:collapse;width:100%;display:block;overflow:auto;margin:20px 0;font-size:14px}th,td{border:1px solid #d0d7de;padding:12px 14px;text-align:left;vertical-align:top}th{background:#f6f8fa}tr:nth-child(even){background:#f6f8fa}img{max-width:100%;height:auto}img[align=right]{margin:0 0 24px 28px;border-radius:10px}code{background:#eff1f3;padding:2px 5px;border-radius:4px;font-size:.88em}pre{overflow:auto;background:#f6f8fa;padding:16px;border-radius:6px}pre code{padding:0}li{margin:6px 0}.preview-note{font-size:12px;color:#656d76;border-bottom:1px solid #d8dee4;padding:10px 32px;background:#f6f8fa}@media(max-width:650px){main{padding:0 18px 40px;margin:24px auto}h1{font-size:28px}img[align=right]{width:110px;margin-left:16px}th,td{min-width:130px;padding:9px}}</style></head><body><div class="preview-note">Local preview · Portfolio</div><main><h1>MLIR-Based Triton Compiler Optimization Framework</h1>
+<p>This project connects GPU compiler theory with real Triton GEMM compilation, IR inspection, optimization prototypes, and correctness validation. I traced a tiled matrix multiplication kernel from Triton through MLIR-based representations to LLVM IR and NVIDIA PTX, then investigated how compiler transformations simplify redundant computation and memory addressing.</p>
+<p><a href="https://github.com/licheng2018/MLIR-Based-Triton-Compiler-Optimization-Framework">GitHub Repository</a></p>
+<h2>Project Goal</h2>
+<p>Understand how GPU computations are lowered across compiler stages, identify optimization opportunities in generated IR, and validate transformations with structural checks and executable correctness experiments.</p>
+<h2>Compiler Pipeline</h2>
+<pre><code>Triton GEMM -&gt; TTIR -&gt; TTGIR -&gt; LLVM IR -&gt; PTX -&gt; GPU Execution
+               |                 |
+          CSE / LICM        CFG / PHI / LSR</code></pre>
+<p>The GEMM kernel uses FP16 inputs, FP32 accumulation, a 32 × 64 × 32 tile, four warps per CTA, masked memory accesses, and a K-dimension reduction loop. GPU experiments ran on an NVIDIA Tesla T4 in Google Colab; isolated LLVM transformation experiments targeted x86-64.</p>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module1-gemm-tiling-gpu-execution-v2.png"><img src="../assets/projects/mlir-triton-compiler/module1-gemm-tiling-gpu-execution-v2.png" alt="Module 1: GEMM tiling and GPU execution"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module1-four-ir-stages.png"><img src="../assets/projects/mlir-triton-compiler/module1-four-ir-stages.png" alt="One GEMM across TTIR, TTGIR, LLVM IR, and PTX"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module1-compiler-actually-generated.png"><img src="../assets/projects/mlir-triton-compiler/module1-compiler-actually-generated.png" alt="Observed compiler path: FP16 loads to PTX FP32 FMA"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module1-correctness-evidence-v2.png"><img src="../assets/projects/mlir-triton-compiler/module1-correctness-evidence-v2.png" alt="Module 1 correctness tests, boundary masking, and compiler artifacts"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module2-optimization-opportunities.png"><img src="../assets/projects/mlir-triton-compiler/module2-optimization-opportunities.png" alt="Finding optimization opportunities in GEMM IR"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module2-cse-reuse.png"><img src="../assets/projects/mlir-triton-compiler/module2-cse-reuse.png" alt="CSE: SSA reuse, native operation reductions, and Python structural verification"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module2-licm-hoisting.png"><img src="../assets/projects/mlir-triton-compiler/module2-licm-hoisting.png" alt="LICM: 12 operations hoisted and estimated evaluations reduced from 432 to 252"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module2-native-mlir-pass.png"><img src="../assets/projects/mlir-triton-compiler/module2-native-mlir-pass.png" alt="Native C++ MLIR CSE pass implementation, plugin build, and five regression tests"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module3-llvm-loop-anatomy.png"><img src="../assets/projects/mlir-triton-compiler/module3-llvm-loop-anatomy.png" alt="LLVM loop anatomy: PHI nodes, control flow, and 32-element / 64-byte address progression"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module3-lsr-index-to-pointer.png"><img src="../assets/projects/mlir-triton-compiler/module3-lsr-index-to-pointer.png" alt="Loop strength reduction: index to pointer and four-way target/pass ablation"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module3-executable-validation.png"><img src="../assets/projects/mlir-triton-compiler/module3-executable-validation.png" alt="Executable validation of original and optimized LLVM IR against A stride-32 samples"></a></figure>
+<figure style="margin:24px 0"><a href="../assets/projects/mlir-triton-compiler/module3-ptx-backend-evidence.png"><img src="../assets/projects/mlir-triton-compiler/module3-ptx-backend-evidence.png" alt="Real GEMM PTX: 64-byte and 32768-byte pointer increments and static instruction counts"></a></figure>
+<h2>Module 1 — Triton GEMM Compiler Pipeline Exploration</h2>
+<p><a href="https://github.com/licheng2018/MLIR-Based-Triton-Compiler-Optimization-Framework/blob/main/triton_gemm_compiler_pipeline.ipynb">Read the original experiment notebook</a></p>
+<p>This module follows one working GEMM kernel through implementation, numerical validation, compiler artifact extraction, GPU layout analysis, and LLVM/PTX inspection. The results below come from the notebook&#x27;s saved execution outputs.</p>
+<h3>1. Environment and Workload</h3>
+<table><thead><tr><th>Component</th><th>Recorded configuration</th></tr></thead><tbody>
+<tr><td>Platform</td><td>Google Colab, Linux x86-64</td></tr>
+<tr><td>GPU</td><td>NVIDIA Tesla T4, compute capability 7.5, 40 SMs, 14.56 GiB reported memory</td></tr>
+<tr><td>Software</td><td>Python 3.13.16, PyTorch 2.11.0+cu130, CUDA 13.0, Triton 3.6.0</td></tr>
+<tr><td>CUDA tools</td><td><code>ptxas</code> and <code>nvcc</code> available</td></tr>
+<tr><td>Standalone compiler tools</td><td><code>clang</code>, <code>llvm-config</code>, and <code>mlir-opt</code> absent from PATH during initial inspection</td></tr>
+<tr><td>Matrix dimensions</td><td>M = 256, N = 512, K = 256</td></tr>
+<tr><td>Tile dimensions</td><td>BLOCK_M = 32, BLOCK_N = 64, BLOCK_K = 32</td></tr>
+<tr><td>Execution</td><td>4 warps per CTA; launch grid (8, 8)</td></tr>
+<tr><td>Precision</td><td>FP16 input/output, FP32 accumulation</td></tr>
+</tbody></table>
+<p>The initial Triton compilation and IR extraction ran without installing standalone LLVM/MLIR utilities. Each program computes one 32 × 64 output tile, reducing over eight 32-element K tiles.</p>
+<h3>2. Kernel Implementation and Correctness</h3>
+<p>The kernel uses <code>tl.program_id</code> to identify output tiles and <code>tl.arange</code> to construct row, column, and reduction indices. Matrix strides translate those indices into pointers. Masked loads substitute zero outside valid input bounds, and a masked store writes only valid output elements.</p>
+<p>The central computation is summarized below; pointer construction and launch arguments are omitted for readability.</p>
+<pre><code>pid_m = tl.program_id(axis=0)
+pid_n = tl.program_id(axis=1)
+offsets_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+offsets_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+offsets_k = tl.arange(0, BLOCK_K)
+accumulator = tl.full((BLOCK_M, BLOCK_N), 0, dtype=tl.float32)
+
+for k_tile in range(tl.cdiv(K, BLOCK_K)):
+    k_offsets = k_tile * BLOCK_K + offsets_k
+    # Build strided A/B pointers and boundary masks.
+    a = tl.load(a_ptrs, mask=a_mask, other=0)
+    b = tl.load(b_ptrs, mask=b_mask, other=0)
+    accumulator = tl.dot(a, b, accumulator)
+
+tl.store(c_ptrs, accumulator.to(tl.float16), mask=c_mask)</code></pre>
+<table><thead><tr><th>Validation</th><th>Notebook result</th></tr></thead><tbody>
+<tr><td>Reference</td><td><code>torch.matmul(A, B)</code></td></tr>
+<tr><td>Comparison</td><td><code>torch.testing.assert_close</code>, rtol = 1e-2, atol = 1e-2</td></tr>
+<tr><td>Main case: M=256, N=512, K=256</td><td>Passed; maximum absolute error 0.03125</td></tr>
+<tr><td>Boundary case: M=250, N=510, K=253</td><td>Passed boundary masking validation</td></tr>
+</tbody></table>
+<p>The main-case error passed the combined relative and absolute tolerance check. The boundary case exercises partial tiles along all three dimensions. These are correctness checks, rather than performance benchmarks.</p>
+<h3>3. Compiler Artifact Extraction and TTIR</h3>
+<p>The returned <code>CompiledKernel</code> exposes <code>source</code>, <code>ttir</code>, <code>ttgir</code>, <code>llir</code>, <code>ptx</code>, and <code>cubin</code> artifacts. The notebook saves the four textual representations for inspection:</p>
+<pre><code>from pathlib import Path
+
+artifacts = Path(&quot;artifacts&quot;)
+artifacts.mkdir(exist_ok=True)
+for stage in (&quot;ttir&quot;, &quot;ttgir&quot;, &quot;llir&quot;, &quot;ptx&quot;):
+    (artifacts / f&quot;gemm.{stage}&quot;).write_text(compiled_kernel.asm[stage])</code></pre>
+<p>This produces <code>gemm.ttir</code>, <code>gemm.ttgir</code>, <code>gemm.llir</code>, and <code>gemm.ptx</code>. PTX is a virtual instruction representation; the later CUBIN contains GPU machine code. The module inspects PTX rather than a SASS disassembly.</p>
+<table><thead><tr><th>Stage</th><th>What becomes visible</th></tr></thead><tbody>
+<tr><td>TTIR</td><td>Logical tensor shapes, SSA dependencies, indexing, masked loads/stores, dot computation, structured reduction loop</td></tr>
+<tr><td>TTGIR</td><td>GPU layouts, warp/thread organization, shared-memory preparation, dot operand layouts, output layout conversion</td></tr>
+<tr><td>LLVM IR</td><td>Explicit control flow, PHI nodes, pointer arithmetic, vector arithmetic, address spaces, NVVM intrinsics</td></tr>
+<tr><td>PTX</td><td>Target-specific arithmetic, vectorized global accesses, shared-memory accesses, predicates, synchronization</td></tr>
+</tbody></table>
+<p>In the saved TTIR, the notebook identifies two <code>tt.load</code> operations, one <code>tt.store</code>, one <code>tt.dot</code>, and one <code>scf.for</code>. The dot consumes 32 × 32 and 32 × 64 FP16 tiles and returns a 32 × 64 FP32 accumulator. <code>iter_args</code> carries that accumulator across the eight loop iterations; <code>scf.yield</code> returns its updated value.</p>
+<p>These are static operations in the IR. A load operation inside the loop executes repeatedly and represents a tensor access rather than a single scalar transaction.</p>
+<h3>4. TTGIR: Layouts and Dot Operand Preparation</h3>
+<p>The TTGIR module records target <code>cuda:75</code>, four warps, 32 threads per warp, and one CTA per program instance. Three blocked layouts describe how logical tensor elements are distributed across execution resources.</p>
+<table><thead><tr><th>Layout</th><th>sizePerThread</th><th>threadsPerWarp</th><th>warpsPerCTA</th><th>order</th></tr></thead><tbody>
+<tr><td><code>#blocked</code></td><td>[1, 8]</td><td>[4, 8]</td><td>[4, 1]</td><td>[1, 0]</td></tr>
+<tr><td><code>#blocked1</code></td><td>[1, 8]</td><td>[8, 4]</td><td>[4, 1]</td><td>[1, 0]</td></tr>
+<tr><td><code>#blocked2</code></td><td>[4, 4]</td><td>[2, 16]</td><td>[4, 1]</td><td>[1, 0]</td></tr>
+</tbody></table>
+<p><code>sizePerThread</code> describes the layout&#x27;s per-thread element arrangement, <code>threadsPerWarp</code> distributes a warp across tensor dimensions, and <code>warpsPerCTA</code> organizes the four warps. These attributes expose execution placement that is absent from the logical TTIR tensor types.</p>
+<p>The saved lowering sequence for each dot operand is:</p>
+<pre><code>FP16 tile loaded with a blocked layout
+-&gt; arith.extf: convert FP16 to FP32
+-&gt; ttg.local_alloc: prepare shared-memory storage
+-&gt; ttg.local_load: load with a dedicated dot operand layout
+-&gt; tt.dot: FP32 operands and FP32 accumulator
+-&gt; scf.yield: carry the accumulator to the next iteration</code></pre>
+<p>A uses <code>#ttg.dot_op</code> with <code>opIdx = 0</code>; B uses <code>opIdx = 1</code>, both with parent <code>#blocked2</code>. The final accumulator is truncated to FP16 with <code>arith.truncf</code>.</p>
+<p>There is one explicit <code>ttg.convert_layout</code> before the output store:</p>
+<pre><code>%0 = ttg.convert_layout %c
+    : tensor&lt;32x64xf16, #blocked2&gt;
+   -&gt; tensor&lt;32x64xf16, #blocked&gt;</code></pre>
+<p>The shape and element type stay the same while thread ownership changes from the computation layout to the store layout. Its exact exchange mechanism and runtime cost require lower-level inspection and profiling.</p>
+<h3>5. PTX Finding: SIMT FP32 FMA</h3>
+<p>The generated PTX implements this kernel&#x27;s matrix arithmetic using FP32 FMA. The saved search finds no <code>mma.sync</code> or WMMA instructions, despite the T4&#x27;s FP16 Tensor Core support.</p>
+<table><thead><tr><th>PTX instruction or pattern</th><th>Static matches</th></tr></thead><tbody>
+<tr><td><code>fma.rn.f32</code></td><td>512</td></tr>
+<tr><td><code>mma.sync</code></td><td>0</td></tr>
+<tr><td><code>wmma</code></td><td>0</td></tr>
+<tr><td><code>bar.sync</code></td><td>6</td></tr>
+</tbody></table>
+<p>This agrees with TTGIR&#x27;s explicit FP16-to-FP32 conversions and LLVM&#x27;s vector multiply-add operations. The cause of the compiler&#x27;s choice remains open; the notebook does not establish that the hardware lacks support or that this is the best-performing implementation.</p>
+<h3>6. LLVM: Control Flow, SSA, and PHI Nodes</h3>
+<p>The LLVM module contains one <code>gemm_kernel</code> function using the <code>ptx_kernel</code> calling convention. Its three basic blocks are entry, loop, and exit, with a self-loop back edge:</p>
+<pre><code>Entry %5 -&gt; Loop %116 -&gt; Exit %420 -&gt; ret void
+                ^  |
+                |__| continue</code></pre>
+<p>Two PHI nodes preserve the loop&#x27;s state:</p>
+<pre><code>%indvars.iv = phi i64 [ 0, %5 ], [ %indvars.iv.next, %116 ]
+%117 = phi &lt;16 x float&gt; [ zeroinitializer, %5 ], [ %419, %116 ]</code></pre>
+<p>On initial entry, they select zero for the index and accumulator. On the back edge, they select the incremented index and updated FP32 vector. The <code>&lt;16 x float&gt;</code> value represents part of the distributed logical accumulator. Its update includes <code>llvm.fmuladd.v16f32</code>, with <code>insertelement</code> and <code>shufflevector</code> preparing vector operands.</p>
+<table><thead><tr><th>Structured TTGIR construct</th><th>LLVM representation</th></tr></thead><tbody>
+<tr><td><code>scf.for</code></td><td>Basic blocks and branches</td></tr>
+<tr><td>Loop induction variable</td><td>Index PHI node, increment, and comparison</td></tr>
+<tr><td><code>iter_args</code></td><td>Accumulator PHI node</td></tr>
+<tr><td><code>scf.yield</code></td><td>Updated value arriving on the back edge</td></tr>
+<tr><td>Loop termination</td><td><code>icmp</code> and conditional <code>br</code></td></tr>
+</tbody></table>
+<p>The index advances from 0 to 7, matching K=256 and BLOCK_K=32. This eight-iteration workload is distinct from the 16-iteration optimization experiments described later on this page.</p>
+<p>Program and thread indices lower to <code>llvm.nvvm.read.ptx.sreg.ctaid.x</code>, <code>ctaid.y</code>, and <code>tid.x</code>. CTA synchronization appears through <code>llvm.nvvm.barrier.cta.sync.aligned.all</code>.</p>
+<h3>7. LLVM and PTX: Addressing and Memory Accesses</h3>
+<p>LLVM uses <code>ptr addrspace(1)</code> for global-memory matrix pointers and address space 3 for shared memory, including <code>@global_smem</code>.</p>
+<table><thead><tr><th>LLVM IR observation</th><th>Static count</th></tr></thead><tbody>
+<tr><td>Global-memory <code>getelementptr</code> instructions</td><td>10</td></tr>
+<tr><td>Shared-memory <code>getelementptr</code> instructions</td><td>90</td></tr>
+<tr><td>Total <code>getelementptr</code> instructions</td><td>100</td></tr>
+<tr><td>Native LLVM loads</td><td>82</td></tr>
+<tr><td>Native LLVM stores</td><td>10</td></tr>
+<tr><td>Inline assembly statements</td><td>5</td></tr>
+</tbody></table>
+<p>A <code>getelementptr</code> calculates an address without loading or storing data. For example, <code>shl i32 %17, 8</code> scales a row-related index by the 256-element row stride of A. Sign extension and <code>getelementptr half</code> then form the corresponding global-memory pointer, accounting for two-byte FP16 elements.</p>
+<p>The inspected native LLVM loads/stores access shared memory. Global accesses instead appear in five inline PTX assembly statements: three predicated vector loads and two predicated vector stores.</p>
+<table><thead><tr><th>Generated PTX memory instruction</th><th>Static count</th></tr></thead><tbody>
+<tr><td><code>ld.global.v4.b32</code></td><td>3</td></tr>
+<tr><td><code>st.global.v4.b32</code></td><td>2</td></tr>
+<tr><td><code>ld.shared</code></td><td>116</td></tr>
+<tr><td><code>st.shared</code></td><td>10</td></tr>
+</tbody></table>
+<p>The global instructions transfer four 32-bit values per vector operation, with predicates consistent with the source masks. Shared-memory instructions include scalar loads and vectorized stores, consistent with the TTGIR operand preparation.</p>
+<p>LLVM and PTX shared-memory counts differ because backend lowering may split, combine, or transform operations. All counts describe this saved compilation&#x27;s static text; they do not measure executed instruction totals, memory transactions, bandwidth, or latency.</p>
+<h3>Module Takeaways</h3>
+<p>This experiment traces a high-level dot operation through explicit GPU layouts, shared-memory preparation, LLVM vector arithmetic, and PTX FMA instructions. It also shows how structured loops become PHI nodes and branches, and how tensor indexing becomes pointer arithmetic and predicated memory operations. Generated code inspection establishes what this compilation produced; profiling and controlled variants are still needed to quantify performance and explain the selected arithmetic path.</p>
+<h2>Module 2 — IR Optimization Pass Implementation</h2>
+<p><a href="https://github.com/licheng2018/MLIR-Based-Triton-Compiler-Optimization-Framework/blob/main/IR_Optimization_Passes.ipynb">Read the original optimization notebook</a></p>
+<p>This module progresses from inspecting real GEMM compiler passes to reproducing CSE in Python and building a native C++ MLIR pass plugin. The following results are recorded notebook outputs; the GPU experiments were not rerun as part of this portfolio update.</p>
+<h3>1. Workload and Baseline Validation</h3>
+<p>The experiment uses a Tesla T4 with Triton 3.6.0, PyTorch 2.11.0+cu130, and CUDA 13.0. A 512 × 512 × 512 GEMM uses 32 × 64 × 32 tiles, FP16 inputs/output, and FP32 accumulation. The K reduction therefore spans 16 iterations.</p>
+<table><thead><tr><th>Baseline check</th><th>Recorded result</th></tr></thead><tbody>
+<tr><td>Reference</td><td><code>torch.matmul</code> with random inputs seeded with 42</td></tr>
+<tr><td>Numerical check</td><td>Passed with atol = 0.125 and rtol = 0.01</td></tr>
+<tr><td>Maximum absolute error</td><td>0.03125</td></tr>
+<tr><td>Compiled resource metadata</td><td>189 registers/thread; 8,192 bytes shared memory</td></tr>
+<tr><td>Optimized TTIR analyzer</td><td>72 matched operations</td></tr>
+</tbody></table>
+<p>The TTIR analyzer counts 12 broadcasts, 11 constants, six each of multiplication, splat, expand-dims, pointer addition, and comparison, plus the remaining indexing, control-flow, dot, and memory operations. These counts characterize the saved IR, while the resource metadata describes the compiled baseline rather than an optimization speedup.</p>
+<h3>2. Dependency Analysis and LICM Candidates</h3>
+<p>The notebook extracts the <code>scf.for</code> body and follows SSA dependencies from the induction variable and loop-carried accumulator. Operations whose inputs remain independent of those values are classified as potential loop invariants.</p>
+<p>The initial analysis identifies 12 invariant candidates and 20 loop-dependent result definitions. A subsequent def-use classification marks 11 candidates as potential hoists and one pointer calculation as requiring further review.</p>
+<p>Examples include row-index expansion, row-stride multiplication, base-pointer splats, column-index expansion, and broadcasts of boundary masks. Dependence analysis proposes candidates; legality also depends on operation effects, valid placement, and compiler semantics.</p>
+<h3>3. Capturing Native Compiler Passes</h3>
+<p>The kernel is exported into <code>gemm_pass_debug.py</code> and compiled in a subprocess with forced recompilation and IR dumping:</p>
+<pre><code>env = os.environ.copy()
+env[&quot;MLIR_ENABLE_DUMP&quot;] = &quot;gemm_kernel&quot;
+env[&quot;TRITON_ALWAYS_COMPILE&quot;] = &quot;1&quot;
+env[&quot;MLIR_DUMP_PATH&quot;] = str(dump_path)
+
+result = subprocess.run(
+    [&quot;python&quot;, &quot;gemm_pass_debug.py&quot;],
+    env=env, capture_output=True, text=True, timeout=180,
+)</code></pre>
+<p>The subprocess returns successfully, passes GEMM correctness, and produces a 4,086,071-byte dump. The recorded pipeline includes canonicalization, tensor-pointer rewriting, Triton combine/reorder passes, CSE, symbol DCE, GPU conversion and layout optimization, loop-aware CSE, and <code>triton-licm</code>.</p>
+<p>The notebook splits the dump into snapshots by pass headers. Since these snapshots are emitted before passes, the state immediately before the next pass supplies the preceding pass&#x27;s output. It saves <code>before_cse.mlir</code>, <code>after_cse.mlir</code>, <code>before_licm.mlir</code>, and <code>after_licm.mlir</code> for focused comparisons.</p>
+<h3>4. Native Triton CSE: Seven Operations Removed</h3>
+<p>The first CSE pass removes repeated range construction and tensor dimension expansion in the real GEMM TTIR.</p>
+<table><thead><tr><th>Operation</th><th>Before CSE</th><th>After CSE</th><th>Removed</th></tr></thead><tbody>
+<tr><td><code>tt.expand_dims</code></td><td>12</td><td>6</td><td>6</td></tr>
+<tr><td><code>tt.make_range</code></td><td>3</td><td>2</td><td>1</td></tr>
+<tr><td>Total matched operations</td><td>79</td><td>72</td><td>7</td></tr>
+</tbody></table>
+<p>This is an 8.9% reduction in the analyzer&#x27;s static operation count. Existing SSA values replace duplicate computations, including reuse of the 32-element range for K indices. The result measures IR simplification rather than GPU execution time.</p>
+<h3>5. Python TTIR CSE Prototype</h3>
+<p>A limited text-based prototype reproduces elimination of the same six <code>tt.expand_dims</code> operations and one <code>tt.make_range</code> operation.</p>
+<ul>
+<li>Supports only these two explicitly selected pure operations.</li>
+<li>Maintains expression tables for lexical loop regions.</li>
+<li>Rewrites operands through an SSA alias map while preserving result definitions.</li>
+<li>Compares operation text, operands, attributes, and types, excluding debug locations.</li>
+<li>Rewrites uses in non-definition instructions such as <code>tt.store</code> and <code>scf.yield</code>.</li>
+</ul>
+<p>The output is saved as <code>prototype_cse.mlir</code>. Structural checks report no remaining references to removed SSA values, and the supported operation counts match native CSE: expand-dims 12 → 6 and make-range 3 → 2.</p>
+<p>These checks validate the recorded transformation&#x27;s structure and counts. The prototype is a constrained text processor rather than a general MLIR parser or a production optimization pass.</p>
+<h3>6. LICM: Twelve Operations Moved Out of the Loop</h3>
+<p>The native <code>triton-licm</code> snapshots show invariant computations moving before the 16-iteration reduction loop. Both snapshots contain 176 lines; the transformation changes placement without requiring a reduction in total static operations.</p>
+<table><thead><tr><th>Operation</th><th>Before: in loop</th><th>After: in loop</th><th>Hoisted</th><th>Estimated repeated evaluations avoided</th></tr></thead><tbody>
+<tr><td><code>tt.expand_dims</code></td><td>4</td><td>2</td><td>2</td><td>30</td></tr>
+<tr><td><code>tt.splat</code></td><td>4</td><td>2</td><td>2</td><td>30</td></tr>
+<tr><td><code>tt.broadcast</code></td><td>8</td><td>4</td><td>4</td><td>60</td></tr>
+<tr><td><code>tt.addptr</code></td><td>4</td><td>3</td><td>1</td><td>15</td></tr>
+<tr><td><code>arith.muli</code></td><td>3</td><td>2</td><td>1</td><td>15</td></tr>
+<tr><td><code>arith.cmpi</code></td><td>4</td><td>2</td><td>2</td><td>30</td></tr>
+<tr><td>Total across these categories</td><td>27</td><td>15</td><td>12</td><td>180</td></tr>
+</tbody></table>
+<p>The estimate uses <code>hoisted × (16 − 1)</code>: each hoisted computation is evaluated once outside the loop instead of once per iteration. These are IR-level evaluation estimates, not measured GPU instructions or runtime improvements. This comparison examines GPU-layout-aware IR at the LICM stage; the earlier candidate analysis starts from TTIR.</p>
+<h3>7. Native C++ MLIR CSE Plugin</h3>
+<p>The notebook installs and verifies LLVM/MLIR 20 tools, including <code>clang++-20</code>, <code>llvm-config-20</code>, and <code>mlir-opt-20</code>. After resolving initial CMake configuration issues, it successfully builds <code>native_mlir/build/libGemmCSE.so</code>.</p>
+<p>The final plugin registers <code>gemm-cse</code> as a <code>func::FuncOp</code> pass through <code>mlirGetPassPluginInfo</code>. It handles integer multiplication, addition, and subtraction in a small address-arithmetic test program.</p>
+<p>For each top-level function block, the pass maintains separate operand-pair tables for <code>arith.muli</code>, <code>arith.addi</code>, and <code>arith.subi</code>. When a duplicate is found, it checks that attributes and result types match, replaces all uses with the earlier result, and erases the duplicate using safe iteration.</p>
+<pre><code>Value canonical = it-&gt;second;
+Operation *canonicalOp = canonical.getDefiningOp();
+if (!canonicalOp ||
+    canonicalOp-&gt;getAttrs() != op.getAttrs() ||
+    canonical.getType() != op.getResult(0).getType()) {
+    continue;
+}
+op.getResult(0).replaceAllUsesWith(canonical);
+op.erase();</code></pre>
+<p>Ordered operand keys preserve subtraction order. The implementation does not normalize commutative operands, perform cross-block CSE, or recursively optimize nested regions. It is a focused native pass demonstration on the standard arithmetic/function dialects; integration into the Triton GEMM compilation pipeline remains future work.</p>
+<p>The plugin is exercised through the MLIR pass pipeline with verification enabled:</p>
+<pre><code>mlir-opt-20 \
+  --load-pass-plugin=/content/native_mlir/build/libGemmCSE.so \
+  --pass-pipeline=&#x27;builtin.module(func.func(gemm-cse))&#x27; \
+  --verify-each \
+  native_mlir/tests/gemm_address.mlir</code></pre>
+<h3>8. Native Regression Tests and Results</h3>
+<p>All five saved regression tests pass expected operation-removal checks and MLIR verification.</p>
+<table><thead><tr><th>Test</th><th>Multiplications removed</th><th>Additions removed</th><th>Subtractions removed</th><th>Result</th></tr></thead><tbody>
+<tr><td><code>gemm_address</code></td><td>1</td><td>1</td><td>0</td><td>PASS</td></tr>
+<tr><td><code>different_operands</code></td><td>0</td><td>0</td><td>0</td><td>PASS</td></tr>
+<tr><td><code>multiple_users</code></td><td>1</td><td>0</td><td>0</td><td>PASS</td></tr>
+<tr><td><code>subtraction_order</code></td><td>0</td><td>0</td><td>0</td><td>PASS</td></tr>
+<tr><td><code>duplicate_subtraction</code></td><td>0</td><td>0</td><td>1</td><td>PASS</td></tr>
+</tbody></table>
+<p>These cases check duplicate address arithmetic, preservation of different operands, replacement of multiple uses, preservation of reversed subtraction operands, and elimination of identical subtraction expressions.</p>
+<p>For <code>gemm_address</code>, multiplication count falls from two to one and addition count from three to two. Total arithmetic operations fall from five to three, a 40% reduction in this small test case. This is separate from the real Triton TTIR result of 79 → 72 operations.</p>
+<p>The notebook saves optimized test IR and CSV summaries in <code>native_mlir/optimization_results.csv</code> and <code>native_mlir/licm_optimization_results.csv</code>. Regression success establishes the expected transformations and verifier acceptance for these cases; it does not constitute numerical execution testing of the native pass or an end-to-end GPU benchmark.</p>
+<h3>Module Takeaways</h3>
+<p>This module connects three levels of compiler work: observing native transformations on real GEMM IR, reproducing a constrained transformation with structural checks, and implementing a loadable C++ MLIR pass with regression coverage. It records actual CSE elimination and LICM movement while keeping static simplification, estimated repeated work, and measured runtime performance distinct.</p>
+<h2>Module 3 — GEMM LLVM IR Optimization</h2>
+<p><a href="https://github.com/licheng2018/MLIR-Based-Triton-Compiler-Optimization-Framework/blob/main/GEMM_LLVM_IR_Optimization.ipynb">Read the original LLVM optimization notebook</a></p>
+<p>This module traces induction variables and memory addresses in real Triton-generated LLVM IR, reproduces an address loop in a controlled LLVM example, tests loop strength reduction (LSR), and checks executable equivalence. It then returns to the GPU kernel&#x27;s PTX to examine backend address updates. Results below are taken from saved notebook outputs; these experiments were not rerun for this page.</p>
+<h3>1. Environment, GEMM, and Extracted Artifacts</h3>
+<p>The notebook verifies LLVM/Clang 20 tools: <code>clang-20</code>, <code>clang++-20</code>, <code>opt-20</code>, <code>llc-20</code>, <code>llvm-as-20</code>, <code>llvm-dis-20</code>, <code>llvm-config-20</code>, and <code>mlir-opt-20</code>. GPU compilation uses a Tesla T4 (SM75), Triton 3.6.0, PyTorch 2.11.0+cu130, and CUDA 13.0.</p>
+<table><thead><tr><th>Configuration or check</th><th>Recorded value</th></tr></thead><tbody>
+<tr><td>Matrix dimensions</td><td>M = N = K = 512</td></tr>
+<tr><td>Tile dimensions</td><td>BLOCK_M = BLOCK_N = BLOCK_K = 32</td></tr>
+<tr><td>Launch</td><td>Grid (16, 16), four warps per program</td></tr>
+<tr><td>Precision</td><td>FP16 inputs/output, FP32 accumulator</td></tr>
+<tr><td>Reduction</td><td>16 K-tile iterations</td></tr>
+<tr><td>Reference</td><td><code>A @ B</code> in PyTorch</td></tr>
+<tr><td>Correctness</td><td>PASS, atol = 0.1 and rtol = 0.01</td></tr>
+<tr><td>Maximum absolute error</td><td>0.03125</td></tr>
+</tbody></table>
+<p>This module uses a 32 × 32 output tile, while Modules 1 and 2 use 32 × 64. Its generated IR and instruction counts therefore describe a separate compilation.</p>
+<p>The project creates <code>llvm_ir</code>, <code>optimized_ir</code>, <code>cfg</code>, <code>passes</code>, and <code>results</code> directories under <code>/content/gemm_llvm_optimization</code>. It extracts all four textual stages from <code>compiled_kernel.asm</code>:</p>
+<table><thead><tr><th>Saved artifact in <code>llvm_ir/</code></th><th>Recorded text length</th></tr></thead><tbody>
+<tr><td><code>gemm_ttir.txt</code></td><td>9,335 characters</td></tr>
+<tr><td><code>gemm_ttgir.txt</code></td><td>10,716 characters</td></tr>
+<tr><td><code>gemm_llir.txt</code></td><td>48,657 characters</td></tr>
+<tr><td><code>gemm_ptx.txt</code></td><td>23,735 characters</td></tr>
+</tbody></table>
+<h3>2. LLVM Structure and Control Flow</h3>
+<table><thead><tr><th>LLVM construct</th><th>Recorded static count</th></tr></thead><tbody>
+<tr><td>PHI nodes</td><td>2</td></tr>
+<tr><td>Branches</td><td>2</td></tr>
+<tr><td><code>getelementptr</code></td><td>91</td></tr>
+<tr><td>Native loads</td><td>80</td></tr>
+<tr><td>Native stores</td><td>8</td></tr>
+<tr><td>Integer additions</td><td>2</td></tr>
+<tr><td>Integer multiplications</td><td>0</td></tr>
+<tr><td>Integer comparisons</td><td>6</td></tr>
+</tbody></table>
+<p>The initial basic-block regex reports zero because it misses the numeric labels. A corrected parser recognizes explicit blocks <code>%108</code> and <code>%396</code>; together with the implicit entry block <code>%5</code>, they form the entry/loop/exit CFG.</p>
+<pre><code>Entry %5 -&gt; Loop %108 -&gt; Exit %396
+                ^  |
+                |__| back edge</code></pre>
+<p>The loop header contains an index PHI and an eight-element FP32 accumulator PHI:</p>
+<pre><code>%indvars.iv = phi i64 [ 0, %5 ], [ %indvars.iv.next, %108 ]
+%109 = phi &lt;8 x float&gt; [ zeroinitializer, %5 ], [ %395, %108 ]</code></pre>
+<p>The loop&#x27;s updated accumulator includes <code>llvm.fmuladd.v8f32</code>. Its latch increments the index, tests against 16, and chooses the exit or back edge:</p>
+<pre><code>%indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
+%exitcond.not = icmp eq i64 %indvars.iv.next, 16
+br i1 %exitcond.not, label %396, label %108</code></pre>
+<h3>3. Induction Variables and Address Progression</h3>
+<p>The real kernel computes a K-tile offset with a shift and uses it in a global-memory GEP:</p>
+<pre><code>%110 = shl nuw nsw i64 %indvars.iv, 5
+%gep = getelementptr half, ptr addrspace(1) %invariant.gep, i64 %110</code></pre>
+<p>For iteration k, the element offset is k × 32. With two-byte FP16 elements, the byte offset is k × 64. Over 16 iterations, the element offsets are <code>0, 32, ..., 480</code> and the byte offsets are <code>0, 64, ..., 960</code>.</p>
+<p>The notebook recursively traces <code>%gep</code> back to the invariant matrix base and the induction-variable chain, separating stable per-thread addressing from the changing reduction offset. This regular progression motivates an isolated LSR experiment.</p>
+<h3>4. Controlled LLVM Address Loop</h3>
+<p>The standalone <code>gemm_address_loop</code> reads <code>A[k * 32]</code> and writes it to consecutive output positions for exactly 16 iterations. A volatile store preserves the observable output. Its <code>%K</code> argument is present but unused; the loop bound is hard-coded to 16.</p>
+<pre><code>loop:
+  %k = phi i64 [ 0, %entry ], [ %k.next, %loop ]
+  %offset = shl i64 %k, 5
+  %ptr = getelementptr half, ptr %A, i64 %offset
+  %value = load half, ptr %ptr
+  %out.ptr = getelementptr half, ptr %out, i64 %k
+  store volatile half %value, ptr %out.ptr
+  %k.next = add nuw i64 %k, 1
+  %done = icmp eq i64 %k.next, 16
+  br i1 %done, label %exit, label %loop</code></pre>
+<p>The first <code>opt-20</code> run uses <code>loop-simplify,loop-reduce</code> with <code>-verify-each</code> and no explicit target. It succeeds, but retains the original index PHI and shift. Successful pass execution alone does not establish that the desired transformation occurred.</p>
+<h3>5. Target-Aware Loop Strength Reduction</h3>
+<p>A subsequent run supplies the x86-64 target and includes induction-variable simplification:</p>
+<pre><code>opt-20 \
+  -mtriple=x86_64-unknown-linux-gnu \
+  -passes=loop-simplify,indvars,loop-reduce \
+  -verify-each -S address_before.ll \
+  -o address_x86_optimized.ll</code></pre>
+<p>The resulting IR carries the input pointer directly across iterations:</p>
+<pre><code>%lsr.iv2 = phi ptr [ %scevgep3, %loop ], [ %A, %entry ]
+%value = load half, ptr %lsr.iv2, align 2
+%scevgep3 = getelementptr i8, ptr %lsr.iv2, i64 64</code></pre>
+<p>The original <code>%offset</code> shift, index-based input GEP, and <code>%k</code> PHI disappear. Output addressing and loop termination are also rewritten using an integer induction variable starting at −32 and advancing by two. Structural detection confirms a pointer PHI, but structural checks alone do not prove equivalent behavior.</p>
+<h3>6. Pass Ablation Study</h3>
+<p>Four runs separate the influence of explicit target information from the additional <code>indvars</code> pass. Each pipeline includes <code>loop-simplify</code> and <code>loop-reduce</code>.</p>
+<table><thead><tr><th>Experiment</th><th>Explicit target</th><th><code>indvars</code> included</th><th>Pointer PHI</th><th>Original shift retained</th><th>Original <code>%k</code> PHI retained</th></tr></thead><tbody>
+<tr><td>A</td><td>None</td><td>No</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>B</td><td>None</td><td>Yes</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>C</td><td>x86-64</td><td>No</td><td>Yes</td><td>No</td><td>No</td></tr>
+<tr><td>D</td><td>x86-64</td><td>Yes</td><td>Yes</td><td>No</td><td>No</td></tr>
+</tbody></table>
+<p>For this example and toolchain, supplying the x86-64 target changes the observed LSR result. Adding <code>indvars</code> alone does not. This supports a target-dependent interpretation of the transformation; it does not establish how every architecture or loop will behave.</p>
+<h3>7. Executable Correctness Validation</h3>
+<p>The original and x86-64-optimized IR are compiled separately with <code>clang-20 -shared -fPIC -O0</code> into <code>results/before.so</code> and <code>results/after.so</code>. Python loads both functions through <code>ctypes</code>.</p>
+<p>The test initializes 512 <code>uint16</code> values with <code>np.arange(512)</code> and checks that both versions copy the expected elements into 16-element output buffers:</p>
+<pre><code>Before:   0, 32, 64, 96, ..., 448, 480
+After:    0, 32, 64, 96, ..., 448, 480
+Expected: A[::32]
+Correctness: PASS</code></pre>
+<p>Both outputs pass exact array equality against <code>A[::32]</code>. The IR loads/stores <code>half</code>, while the test uses <code>uint16</code> storage to observe the copied 16-bit patterns without floating-point arithmetic. The printed sequence represents sampled input values at element offsets, rather than byte addresses.</p>
+<p>This validates the fixed 16-iteration copy example for the recorded input. It does not execute an optimized GPU GEMM or establish general equivalence across arbitrary LLVM programs.</p>
+<h3>8. Real GEMM PTX Backend Analysis</h3>
+<p>The notebook returns to the original Triton kernel&#x27;s PTX and counts opcode families after removing optional predicates.</p>
+<table><thead><tr><th>PTX opcode family</th><th>Recorded static count</th></tr></thead><tbody>
+<tr><td><code>add</code></td><td>14</td></tr>
+<tr><td><code>mul</code></td><td>1</td></tr>
+<tr><td><code>mad</code></td><td>3</td></tr>
+<tr><td><code>shl</code></td><td>13</td></tr>
+<tr><td><code>cvt</code></td><td>24</td></tr>
+<tr><td><code>mov</code></td><td>34</td></tr>
+<tr><td><code>ld</code></td><td>121</td></tr>
+<tr><td><code>st</code></td><td>9</td></tr>
+<tr><td><code>bra</code></td><td>1</td></tr>
+<tr><td><code>setp</code></td><td>3</td></tr>
+</tbody></table>
+<p>Focused searches find two <code>ld.global.v4.b32</code> instructions and loop-carried pointer updates including:</p>
+<pre><code>add.s64 %rd10, %rd10, 64;
+add.s64 %rd9, %rd9, 32768;</code></pre>
+<p>The 64-byte and 32,768-byte increments are consistent with advancing A and B by one 32-element K tile in this row-major FP16 workload. They demonstrate address progression already present in the generated backend code.</p>
+<p>The 13 remaining shift instructions serve multiple indexing roles; their presence does not show that the original reduction-loop shift survived unchanged. Opcode counts are static text statistics, not dynamic execution counts or a comparison against a separately optimized GPU kernel. The simple scanner also reports zero <code>ret</code> matches because it expects whitespace after an opcode and misses the bare <code>ret;</code> form; that result is not evidence of a missing return.</p>
+<h3>Module Takeaways</h3>
+<p>This module combines real GPU IR dependency analysis, a controlled target-sensitive LSR experiment, a four-way pass ablation, executable validation, and PTX inspection. It demonstrates pointer induction in the isolated x86-64 example and connects the idea to GPU backend address updates. It does not apply that standalone transformed IR back to the Triton kernel or claim a measured GEMM speedup.</p>
+<h2>Results and Scope</h2>
+<p>The recorded improvements reduce redundant IR computations and simplify address generation. The table separates actual static IR reductions from estimated repeated evaluations and structural changes in the isolated LLVM experiment.</p>
+<h3>Optimization Results at a Glance</h3>
+<table><thead><tr><th>Experiment and metric</th><th>Before</th><th>After</th><th>Improvement</th><th>Evidence and scope</th></tr></thead><tbody>
+<tr><td>Real Triton GEMM: total matched TTIR operations after CSE</td><td>79</td><td>72</td><td>7 removed; 8.9% fewer</td><td>Native compiler pass snapshots, Module 2</td></tr>
+<tr><td>TTIR CSE: <code>tt.expand_dims</code></td><td>12</td><td>6</td><td>6 removed; 50.0% fewer</td><td>Reuses equivalent dimension expansions</td></tr>
+<tr><td>TTIR CSE: <code>tt.make_range</code></td><td>3</td><td>2</td><td>1 removed; 33.3% fewer</td><td>Reuses an existing index range</td></tr>
+<tr><td>Native C++ MLIR test: arithmetic operations</td><td>5</td><td>3</td><td>2 removed; 40.0% fewer</td><td>Small address-arithmetic test; separate from full GEMM</td></tr>
+<tr><td>LICM: selected static operations inside K loop</td><td>27</td><td>15</td><td>12 moved outside; 44.4% fewer inside loop</td><td>Actual before/after pass snapshots; total static work is relocated</td></tr>
+<tr><td>LICM: estimated evaluations of those selected operations over 16 iterations</td><td>432</td><td>252</td><td>180 avoided; 41.7% fewer</td><td>Includes 12 once-only hoisted evaluations; IR-level estimate</td></tr>
+<tr><td>Isolated x86-64 LSR: original <code>%offset = shl</code> definition</td><td>1</td><td>0</td><td>Replaced by pointer induction with a 64-byte step</td><td>Structural comparison; not a total instruction-count reduction</td></tr>
+</tbody></table>
+<figure style="margin:24px 0"><img src="../assets/projects/mlir-triton-compiler/optimization-results.svg" alt="Compiler optimization results: before and after" width="1080" height="660"><figcaption style="font-size:13px;color:#656d76">Static IR counts and estimated evaluations; no GPU timing comparison.</figcaption></figure>
+<p>The three charts use separate scales because they measure different workloads. Their percentages must not be added together or interpreted as end-to-end speedups.</p>
+<h3>How CSE Improves the IR</h3>
+<p>CSE replaces repeated expressions with an existing SSA result. In the real TTIR, six dimension expansions and one range construction disappear, lowering the matched operation count from 79 to 72. The Python prototype reproduces these removals and passes its structural checks.</p>
+<p>The native C++ pass applies the same reuse principle to integer arithmetic. In the small <code>gemm_address</code> case, removing a duplicate multiplication also makes two additions equivalent; both duplicates are eliminated, leaving three arithmetic operations instead of five. Five regression cases pass expected-removal checks and MLIR verification.</p>
+<pre><code>Before: p0 = row * stride; p1 = row * stride
+        a0 = p0 + col;     a1 = p1 + col
+        result = a0 + a1
+After:  p0 = row * stride
+        a0 = p0 + col
+        result = a0 + a0</code></pre>
+<p>This eliminates redundant IR computation. Its GPU benefit still depends on subsequent lowering, existing backend simplifications, and the workload&#x27;s bottleneck.</p>
+<h3>How LICM Reduces Repeated Work</h3>
+<p>LICM moves computations independent of the K-loop index before the loop. Their values are reused across all 16 iterations. Unlike CSE, this transformation need not reduce the total static operation count: it changes how often an operation would be evaluated.</p>
+<table><thead><tr><th>Selected operation</th><th>Inside loop before</th><th>Inside loop after</th><th>Hoisted once</th><th>Estimated evaluations before</th><th>Estimated evaluations after</th><th>Avoided</th></tr></thead><tbody>
+<tr><td><code>tt.expand_dims</code></td><td>4</td><td>2</td><td>2</td><td>64</td><td>34</td><td>30</td></tr>
+<tr><td><code>tt.splat</code></td><td>4</td><td>2</td><td>2</td><td>64</td><td>34</td><td>30</td></tr>
+<tr><td><code>tt.broadcast</code></td><td>8</td><td>4</td><td>4</td><td>128</td><td>68</td><td>60</td></tr>
+<tr><td><code>tt.addptr</code></td><td>4</td><td>3</td><td>1</td><td>64</td><td>49</td><td>15</td></tr>
+<tr><td><code>arith.muli</code></td><td>3</td><td>2</td><td>1</td><td>48</td><td>33</td><td>15</td></tr>
+<tr><td><code>arith.cmpi</code></td><td>4</td><td>2</td><td>2</td><td>64</td><td>34</td><td>30</td></tr>
+<tr><td>Total</td><td>27</td><td>15</td><td>12</td><td>432</td><td>252</td><td>180</td></tr>
+</tbody></table>
+<p>The estimate counts each selected in-loop operation once per iteration and each hoisted operation once per program instance:</p>
+<pre><code>Before = 27 × 16                    = 432 evaluations
+After  = 15 × 16 + 12                = 252 evaluations
+Saved  = 12 × (16 − 1)               = 180 evaluations
+Reduction = (432 − 252) / 432 × 100   = 41.7%</code></pre>
+<p>The 44.4% reduction in selected operations inside the loop differs from the 41.7% reduction in their estimated evaluations because the hoisted operations still execute once. Neither percentage measures all kernel instructions or runtime latency.</p>
+<h3>How LSR Changes Address Generation</h3>
+<p>In the isolated LLVM example, LSR replaces repeatedly forming <code>base + k × 64 bytes</code> with a loop-carried pointer advanced by 64 bytes. This changes the recurrence used to generate addresses; it does not remove the need to update the pointer.</p>
+<table><thead><tr><th>Validation</th><th>Recorded outcome</th><th>What it establishes</th></tr></thead><tbody>
+<tr><td>Default target, with or without <code>indvars</code></td><td>Original shift retained; no pointer PHI</td><td>Requested pass execution alone did not produce the desired rewrite</td></tr>
+<tr><td>Explicit x86-64 target, with or without <code>indvars</code></td><td>Original shift removed; pointer PHI introduced</td><td>Target-sensitive address rewrite in this example</td></tr>
+<tr><td>Original and optimized shared libraries</td><td>Both exactly match <code>A[::32]</code></td><td>Recorded fixed-loop test preserves copied values</td></tr>
+<tr><td>Real Triton PTX inspection</td><td>64-byte and 32,768-byte pointer increments observed</td><td>Backend address recurrences are already present; no controlled GPU before/after comparison</td></tr>
+</tbody></table>
+<h3>Performance Scope and Next Measurements</h3>
+<p>No GPU latency, throughput, occupancy, or speedup comparison was recorded for these transformations. The native plugin is tested on small standard-dialect arithmetic programs and has not been integrated into Triton GEMM compilation. The x86-64 LSR experiment is also separate from the original GPU kernel.</p>
+<p>To establish runtime improvement, the next step is a controlled baseline/optimized GPU comparison with identical shapes, precision, tiles, hardware, and toolchain. It should record correctness, steady-state kernel latency after warm-up, throughput, registers, shared memory, occupancy, and profiler instruction/memory metrics. That comparison would show whether reduced IR work survives lowering and improves the actual bottleneck.</p>
+<p><strong>Technologies:</strong> Triton, MLIR, LLVM, Python, C++, GEMM, TTIR, TTGIR, PTX, SSA, CSE, LICM, and Loop Strength Reduction.</p>
+<p><a href="../index.html">Back to Home</a></p></main></body></html>

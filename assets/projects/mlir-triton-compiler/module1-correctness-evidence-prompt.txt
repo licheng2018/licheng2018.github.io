@@ -1,0 +1,26 @@
+Generated with built-in image_gen. Style reference: module1-compiler-actually-generated.png.
+
+Use case: scientific-educational. Create a landscape English technical interview infographic titled "Correctness & Evidence", subtitle "Module 1 — Validating Triton GEMM and Inspecting Compiler Artifacts". Match attached STYLE reference: white background, navy section headers with white bold text, cyan numbered circular badges, pale blue rounded cards, teal arrows, thin blue borders, mint success strips, professional cohesive engineering report appearance. Readable precise text.
+Two main columns, left 50% and right 50%, with a bottom full-width evidence scope strip.
+Left top panel numbered 1 header "Test Workloads". Two comparison cards side by side:
+"Main case — aligned dimensions" dimensions "M = 256, N = 512, K = 256"; "A: 256 × 256", "B: 256 × 512", "C: 256 × 512"; "8 × 8 output tiles"; "8 K-tile iterations". Small output matrix grid showing complete tiles.
+"Boundary case — non-divisible dimensions" dimensions "M = 250, N = 510, K = 253"; "A: 250 × 253", "B: 253 × 510", "C: 250 × 510"; "Ceiling grid: 8 × 8"; "Partial tiles along M, N and K". Small tile illustration with valid cells blue and out-of-bounds cells gray, dashed boundary, legend "Valid" / "Masked out". Do not imply all grid cells invalid.
+Left lower panel numbered 2 header "Boundary Masking". Show readable short pseudocode cards:
+"Load A: (m < M) AND (k < K)"
+"Load B: (k < K) AND (n < N)"
+"tl.load(..., mask=mask, other=0)"
+→ "Out-of-bounds inputs contribute zero"
+"Store C: (m < M) AND (n < N)"
+"tl.store(..., mask=c_mask)"
+→ "Only valid output elements are written"
+Mint takeaway "Boundary test exercises partial tiles in all three dimensions."
+Right top panel numbered 3 header "Numerical Validation". Flow cards "Triton output" and "torch.matmul reference" converge to "torch.testing.assert_close". Prominent tolerance box "rtol = 1e-2  |  atol = 1e-2". Formula small "Tolerance: |actual − expected| ≤ atol + rtol × |expected|". Compact table "Test | Result | Max absolute error", rows "Main case | PASS | 0.03125", "Boundary case | PASS | Not reported". Important: NEVER attach 0.03125 to boundary case. Small note "Passing uses combined relative and absolute tolerance." Mint result strip "Main correctness and boundary masking checks passed."
+Right lower panel numbered 4 header "Compiler Artifacts". File tree with exactly four text files:
+"artifacts/"
+"├── gemm.ttir   — tensor operations & SSA"
+"├── gemm.ttgir  — GPU layouts & shared memory"
+"├── gemm.llir   — CFG, PHI nodes & addresses"
+"└── gemm.ptx    — target-specific GPU instructions"
+Caption "Extracted from compiled_kernel.asm". Small linked process "Compile → Validate → Extract → Inspect". These files are generated in the notebook, do not suggest they are downloaded links.
+Bottom scope strip navy header "What the evidence establishes". Text "Recorded numerical checks for two tested shapes + inspectable compiler representations." Second sentence "These checks do not establish correctness for every shape or a measured performance improvement." Footer exact "Tesla T4 (SM75) • Triton 3.6.0 • FP16 inputs/output, FP32 accumulation • Tile 32×64×32 • 4 warps".
+Avoid invented timings, speedups, universal proof claims. All typography accurate, no duplicated words, no clutter.

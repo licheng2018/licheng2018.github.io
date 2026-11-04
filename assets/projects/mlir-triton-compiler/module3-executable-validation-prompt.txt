@@ -1,0 +1,23 @@
+Generated using built-in image_gen; reference: module3-lsr-index-to-pointer.png.
+
+Create a landscape English technical interview infographic titled "Executable Validation: Same Values After Optimization", subtitle "Module 3 — Running Original and LSR-Optimized LLVM IR". Match supplied style reference: white background, navy section header bars, cyan numbered circles, pale blue rounded code cards, thin blue borders, teal arrows, mint result strips, professional highly readable engineering report.
+Top full-width panel 1 "Compile Two IR Versions". Two parallel aligned lanes:
+"Original IR: address_before.ll" → "clang-20 -shared -fPIC -O0" → "results/before.so"
+"Optimized IR: address_x86_optimized.ll" → "clang-20 -shared -fPIC -O0" → "results/after.so".
+Add note "Both shared libraries compiled successfully." Note optimized file is x86-64 pointer-induction variant. Do not say GPU execution.
+Middle left panel 2 "Prepare a Deterministic Copy Test". Code:
+"A = np.arange(512, dtype=np.uint16)"
+"out_before = np.zeros(16, dtype=np.uint16)"
+"out_after = np.zeros(16, dtype=np.uint16)"
+"expected = A[::32]"
+Small memory strip showing indices 0, 32, 64, …, 480 highlighted in a 512-element input array, arrows to 16 output values. Label "16 fixed iterations; read A[k × 32]". Small accurate note "IR uses half loads/stores; uint16 storage makes copied 16-bit patterns directly observable. No FP arithmetic in this test." Another label "Element stride: 32 • Byte stride: 64".
+Middle right panel 3 "Load & Call with ctypes". Flow "ctypes.CDLL(before.so / after.so)" → "gemm_address_loop" → "Output buffers". Compact signature "argtypes = [c_void_p, c_void_p, c_int64]" and "restype = None". Show two calls:
+"fn_before(A.ctypes.data, out_before.ctypes.data, 512)"
+"fn_after(A.ctypes.data, out_after.ctypes.data, 512)"
+Small note "The K argument is unused in this example; loop bound is fixed at 16."
+Bottom full-width panel 4 "Exact Array Comparison". Three aligned rows labelled "Before", "After", "Expected", each shows exact sequence "0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480". These must all match exactly, no extra or missing values. Use small monospace sufficient width. Below two checks:
+"np.testing.assert_array_equal(out_before, expected)"
+"np.testing.assert_array_equal(out_after, expected)".
+Prominent mint badge "Correctness: PASS — both outputs exactly match A[::32]".
+Scope strip "These are sampled input values at element offsets, not byte addresses." Secondary scope "Validates the recorded 16-iteration copy test; not general program equivalence or a GPU GEMM speedup measurement."
+Footer "LLVM / Clang 20 • x86-64 shared libraries • 512 input elements • 16 output elements". Keep typography precise and spacious.
