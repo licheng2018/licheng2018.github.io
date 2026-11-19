@@ -26,6 +26,10 @@ Source repo: [github](https://github.com/licheng2018/serving-benchmark/tree/main
 
 ![Serving load trade-off for batch, concurrency, TTFT, TPOT, and throughput](../assets/projects/llm-serving/serving-load-batch-concurrency-latency-throughput-tradeoff.png)
 
+![Measured serving results: first-token latency rose 3.57x, time per output token stayed near 36 ms, and increasing concurrency reduced aggregate throughput by 37% while raising P95 request latency 23.2x.](../assets/projects/llm-serving/benchmark-results-diagnosis.svg)
+
+[View measurements and saved benchmark summaries](#benchmark-repository-results)
+
 The project focuses on practical serving metrics rather than model accuracy. It studies what happens after a user sends a prompt to an inference service:
 
 - How long the user waits before the first token appears.

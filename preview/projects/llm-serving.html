@@ -31,11 +31,13 @@
 <td><a href="#benchmark-limitations-and-scope">Benchmark Limitations and Scope</a> · <a href="#main-takeaways">Main Takeaways</a> · <a href="#skills-demonstrated">Skills Demonstrated</a> · <a href="#experiment-result-analysis">Experiment Result Analysis</a></td>
 </tr>
 </tbody></table>
-<h2>Project Goal</h2>
+<h2 id="project-goal">Project Goal</h2>
 <p><img src="../assets/projects/llm-serving/llm-inference-serving-e2e-benchmark-pipeline.png" alt="LLM inference serving end-to-end benchmark pipeline"></p>
 <p><img src="../assets/projects/llm-serving/llm-inference-prefill-vs-decode.png" alt="LLM inference prefill versus decode"></p>
 <p><img src="../assets/projects/llm-serving/llm-inference-kv-cache-concurrency-oom-risk.png" alt="LLM inference KV cache, concurrency, and OOM risk"></p>
 <p><img src="../assets/projects/llm-serving/serving-load-batch-concurrency-latency-throughput-tradeoff.png" alt="Serving load trade-off for batch, concurrency, TTFT, TPOT, and throughput"></p>
+<p><img id="benchmark-results-diagnosis" src="../assets/projects/llm-serving/benchmark-results-diagnosis.svg" alt="Measured serving results: first-token latency rose 3.57x, time per output token stayed near 36 ms, and increasing concurrency reduced aggregate throughput by 37% while raising P95 request latency 23.2x."></p>
+<p><a href="#benchmark-repository-results">View measurements and saved benchmark summaries</a></p>
 <p>The project focuses on practical serving metrics rather than model accuracy. It studies what happens after a user sends a prompt to an inference service:</p>
 <ul>
 <li>How long the user waits before the first token appears.</li>
@@ -510,7 +512,7 @@ TPOT may gradually increase
 </tr>
 </tbody></table>
 <p>This creates a latency-throughput trade-off. More concurrency can improve utilization, but it can also increase queueing delay and tail latency.</p>
-<h2>Benchmark Repository Results</h2>
+<h2 id="benchmark-repository-results">Benchmark Repository Results</h2>
 <p>The full benchmark repository includes three notebooks and saved result artifacts:</p>
 <ul>
 <li><a href="https://github.com/licheng2018/serving-benchmark/blob/main/1.minimal_benchmark%20copy.ipynb">1.minimal_benchmark copy.ipynb</a></li>
